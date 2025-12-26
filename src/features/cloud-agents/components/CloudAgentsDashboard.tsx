@@ -409,6 +409,7 @@ export const CloudAgentsDashboard: FC<CloudAgentsDashboardProps> = ({ initialCon
   const previousMessageIdsRef = useRef<Set<string>>(new Set());
   const isUserScrolledUpRef = useRef<boolean>(false);
   const lastAutoScrollTimeRef = useRef<number>(0);
+  const pendingMessageCountRef = useRef<number>(0);
   const [showNewMessagesButton, setShowNewMessagesButton] = useState(false);
   const [firstUnreadId, setFirstUnreadId] = useState<string | undefined>(undefined);
 
@@ -552,6 +553,11 @@ export const CloudAgentsDashboard: FC<CloudAgentsDashboardProps> = ({ initialCon
     }
   }, [state.selectedAgentId]);
 
+  // Update ref when pendingMessageCount changes (for use in scroll callbacks)
+  useEffect(() => {
+    pendingMessageCountRef.current = state.pendingMessageCount;
+  }, [state.pendingMessageCount]);
+
   // Debounce search query
   useEffect(() => {
     const timer = setTimeout(() => {
@@ -617,13 +623,17 @@ export const CloudAgentsDashboard: FC<CloudAgentsDashboardProps> = ({ initialCon
     const wasScrolledUp = isUserScrolledUpRef.current;
     isUserScrolledUpRef.current = !isAtBottom;
 
-    const shouldShowButton = !isAtBottom && state.pendingMessageCount > 0;
+    // Use ref for current pending count to avoid stale closures
+    const pendingCount = pendingMessageCountRef.current;
+    const shouldShowButton = !isAtBottom && pendingCount > 0;
     setShowNewMessagesButton(shouldShowButton);
 
-    if (wasScrolledUp && isAtBottom && state.pendingMessageCount > 0) {
-      markMessagesRead(state.pendingMessageCount);
+    // Auto-mark as read when scrolling to bottom
+    if (wasScrolledUp && isAtBottom && pendingCount > 0) {
+      // Only mark messages as read if we haven't already handled them
+      markMessagesRead(pendingCount);
     }
-  }, [state.pendingMessageCount, markMessagesRead]);
+  }, [markMessagesRead]);
 
   const scrollToFirstUnread = useCallback(() => {
     if (firstUnreadId) {
@@ -942,6 +952,8 @@ export const CloudAgentsDashboard: FC<CloudAgentsDashboardProps> = ({ initialCon
       border: 'border-border'
     };
 
+    const isRunning = currentAgent.status === 'RUNNING';
+
     return (
       <div className="flex-shrink-0 px-2 sm:px-3 md:px-4 py-2 sm:py-3 border border-border rounded-xl bg-card-raised">
         <div className="flex items-center justify-between gap-2 sm:gap-3 md:gap-4 flex-wrap">
@@ -950,6 +962,22 @@ export const CloudAgentsDashboard: FC<CloudAgentsDashboardProps> = ({ initialCon
               <div className="w-2.5 h-2.5 rounded-full flex-shrink-0" style={{ backgroundColor: currentAgent.configColor }} />
             )}
             <span className="text-sm font-semibold text-foreground">{currentAgent.name ?? 'Unnamed Agent'}</span>
+            
+            {/* Running Indicator */}
+            {isRunning ? (
+              <div className="flex items-center gap-1.5 px-2 py-0.5 bg-emerald-500/10 border border-emerald-500/30 rounded-full">
+                <span className="relative flex h-1.5 w-1.5">
+                  <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-emerald-400 opacity-75"></span>
+                  <span className="relative inline-flex rounded-full h-1.5 w-1.5 bg-emerald-500"></span>
+                </span>
+                <span className="text-[0.65rem] font-medium text-emerald-400">Running</span>
+              </div>
+            ) : (
+              <span className={`text-xs px-2 py-0.5 rounded border font-medium ${statusStyle.bg} ${statusStyle.text} ${statusStyle.border}`}>
+                {currentAgent.status ?? 'UNKNOWN'}
+              </span>
+            )}
+            
             <button
               type="button"
               onClick={() => void selectAgent('')}
@@ -1010,27 +1038,36 @@ export const CloudAgentsDashboard: FC<CloudAgentsDashboardProps> = ({ initialCon
               </button>
             </div>
           )}
-          <div className="flex items-center gap-2 flex-shrink-0">
-            <span className={`text-xs px-2 py-1 rounded border font-medium ${statusStyle.bg} ${statusStyle.text} ${statusStyle.border}`}>
-              {currentAgent.status ?? 'UNKNOWN'}
-            </span>
+          <div className="flex items-center gap-1.5 sm:gap-2 flex-shrink-0">
+            {!isRunning && (
+              <span className={`text-[0.65rem] sm:text-xs px-1.5 sm:px-2 py-0.5 sm:py-1 rounded border font-medium ${statusStyle.bg} ${statusStyle.text} ${statusStyle.border}`}>
+                {currentAgent.status ?? 'UNKNOWN'}
+              </span>
+            )}
             <button
               type="button"
               onClick={() => void stop(currentAgent.id)}
-              className="px-2.5 py-1 text-xs font-medium rounded-lg bg-amber-950/50 border border-amber-700/50 text-amber-300 hover:bg-amber-900/50 hover:border-amber-600 disabled:opacity-50 transition-colors focus:outline-none focus:ring-2 focus:ring-amber-500/50"
+              className="flex items-center gap-1 px-2 sm:px-2.5 py-1 text-[0.65rem] sm:text-xs font-medium rounded-lg bg-amber-950/50 border border-amber-700/50 text-amber-300 hover:bg-amber-900/50 hover:border-amber-600 disabled:opacity-50 transition-colors focus:outline-none focus:ring-2 focus:ring-amber-500/50"
               disabled={actionsState.busy}
               aria-label="Stop agent"
             >
-              Stop
+              <svg className="w-3 h-3 sm:w-4 sm:h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 10a1 1 0 011-1h4a1 1 0 011 1v4a1 1 0 01-1 1h-4a1 1 0 01-1-1v-4z" />
+              </svg>
+              <span className="hidden sm:inline">Stop</span>
             </button>
             <button
               type="button"
               onClick={() => setShowDeleteConfirm(currentAgent.id)}
-              className="px-2.5 py-1 text-xs font-medium rounded-lg bg-red-950/50 border border-red-700/50 text-red-300 hover:bg-red-900/50 hover:border-red-600 disabled:opacity-50 transition-colors focus:outline-none focus:ring-2 focus:ring-red-500/50"
+              className="flex items-center gap-1 px-2 sm:px-2.5 py-1 text-[0.65rem] sm:text-xs font-medium rounded-lg bg-red-950/50 border border-red-700/50 text-red-300 hover:bg-red-900/50 hover:border-red-600 disabled:opacity-50 transition-colors focus:outline-none focus:ring-2 focus:ring-red-500/50"
               disabled={actionsState.busy}
               aria-label="Delete agent"
             >
-              Delete
+              <svg className="w-3 h-3 sm:w-4 sm:h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16" />
+              </svg>
+              <span className="hidden sm:inline">Delete</span>
             </button>
           </div>
         </div>
@@ -1042,31 +1079,43 @@ export const CloudAgentsDashboard: FC<CloudAgentsDashboardProps> = ({ initialCon
   // Main Render
   // =========================================================================
 
-  const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
+  const [sidebarCollapsed, setSidebarCollapsed] = useState(true);
+
+  // Auto-collapse sidebar on tablet (1024px and below)
+  useEffect(() => {
+    const handleResize = () => {
+      if (window.innerWidth < 1024) {
+        setSidebarCollapsed(true);
+      }
+    };
+    handleResize();
+    window.addEventListener('resize', handleResize);
+    return () => window.removeEventListener('resize', handleResize);
+  }, []);
 
   return (
     <div className="flex h-full gap-2 sm:gap-3 p-2 sm:p-3 overflow-hidden flex-col lg:flex-row relative">
-      {/* Sidebar Collapse Button */}
-      {!sidebarCollapsed && (
-        <button
-          type="button"
-          onClick={() => setSidebarCollapsed(!sidebarCollapsed)}
-          className="hidden lg:flex fixed left-[calc(20rem-1rem)] xl:left-[calc(24rem-1rem)] top-1/2 -translate-y-1/2 z-50 items-center justify-center w-8 h-16 bg-card border border-border rounded-r-lg hover:bg-card-raised transition-all duration-200 shadow-lg"
-          aria-label="Collapse sidebar"
-        >
-          <svg className="w-4 h-4 text-muted-foreground transition-transform duration-200" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 19l-7-7 7-7" />
-          </svg>
-        </button>
-      )}
+      {/* Sidebar Toggle Button - Mobile & Tablet */}
       {sidebarCollapsed && (
         <button
           type="button"
           onClick={() => setSidebarCollapsed(!sidebarCollapsed)}
-          className="hidden lg:flex fixed left-0 top-1/2 -translate-y-1/2 z-50 items-center justify-center w-8 h-16 bg-card border border-border rounded-r-lg hover:bg-card-raised transition-all duration-200 shadow-lg"
-          aria-label="Expand sidebar"
+          className="flex fixed left-0 top-1/2 -translate-y-1/2 z-50 items-center justify-center w-10 h-20 bg-card border border-border border-r-0 rounded-r-lg hover:bg-card-raised transition-all duration-200 shadow-lg lg:w-8 lg:h-16"
+          aria-label="Open sidebar"
         >
-          <svg className="w-4 h-4 text-muted-foreground transition-transform duration-200 rotate-180" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+          <svg className="w-5 h-5 text-muted-foreground lg:w-4 lg:h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 6h16M4 12h16M4 18h16" />
+          </svg>
+        </button>
+      )}
+      {!sidebarCollapsed && (
+        <button
+          type="button"
+          onClick={() => setSidebarCollapsed(true)}
+          className="hidden lg:flex fixed left-[calc(20rem-1rem)] xl:left-[calc(24rem-1rem)] top-1/2 -translate-y-1/2 z-50 items-center justify-center w-8 h-16 bg-card border border-border rounded-r-lg hover:bg-card-raised transition-all duration-200 shadow-lg"
+          aria-label="Collapse sidebar"
+        >
+          <svg className="w-4 h-4 text-muted-foreground transition-transform duration-200" fill="none" stroke="currentColor" viewBox="0 0 24 24">
             <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 19l-7-7 7-7" />
           </svg>
         </button>
@@ -1277,6 +1326,19 @@ export const CloudAgentsDashboard: FC<CloudAgentsDashboardProps> = ({ initialCon
 
           {/* Loading State */}
           {state.selectedAgentId && state.isConversationLoading && <ConversationSkeleton />}
+
+          {/* Live Status Indicator */}
+          {currentAgent?.status === 'RUNNING' && (
+            <div className="flex items-center justify-center py-2">
+              <div className="flex items-center gap-2 px-3 py-1.5 bg-emerald-500/10 border border-emerald-500/30 rounded-full">
+                <span className="relative flex h-2 w-2">
+                  <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-emerald-400 opacity-75"></span>
+                  <span className="relative inline-flex rounded-full h-2 w-2 bg-emerald-500"></span>
+                </span>
+                <span className="text-xs font-medium text-emerald-400">Live</span>
+              </div>
+            </div>
+          )}
 
           {/* Empty States */}
           {!state.selectedAgentId && !state.isConversationLoading && renderEmptyState(
