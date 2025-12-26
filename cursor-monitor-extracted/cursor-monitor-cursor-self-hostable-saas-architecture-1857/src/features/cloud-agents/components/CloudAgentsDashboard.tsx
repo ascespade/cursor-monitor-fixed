@@ -942,6 +942,8 @@ export const CloudAgentsDashboard: FC<CloudAgentsDashboardProps> = ({ initialCon
       border: 'border-border'
     };
 
+    const isRunning = currentAgent.status === 'RUNNING';
+
     return (
       <div className="flex-shrink-0 px-2 sm:px-3 md:px-4 py-2 sm:py-3 border border-border rounded-xl bg-card-raised">
         <div className="flex items-center justify-between gap-2 sm:gap-3 md:gap-4 flex-wrap">
@@ -950,6 +952,22 @@ export const CloudAgentsDashboard: FC<CloudAgentsDashboardProps> = ({ initialCon
               <div className="w-2.5 h-2.5 rounded-full flex-shrink-0" style={{ backgroundColor: currentAgent.configColor }} />
             )}
             <span className="text-sm font-semibold text-foreground">{currentAgent.name ?? 'Unnamed Agent'}</span>
+            
+            {/* Running Indicator */}
+            {isRunning ? (
+              <div className="flex items-center gap-1.5 px-2 py-0.5 bg-emerald-500/10 border border-emerald-500/30 rounded-full">
+                <span className="relative flex h-1.5 w-1.5">
+                  <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-emerald-400 opacity-75"></span>
+                  <span className="relative inline-flex rounded-full h-1.5 w-1.5 bg-emerald-500"></span>
+                </span>
+                <span className="text-[0.65rem] font-medium text-emerald-400">Running</span>
+              </div>
+            ) : (
+              <span className={`text-xs px-2 py-0.5 rounded border font-medium ${statusStyle.bg} ${statusStyle.text} ${statusStyle.border}`}>
+                {currentAgent.status ?? 'UNKNOWN'}
+              </span>
+            )}
+            
             <button
               type="button"
               onClick={() => void selectAgent('')}
@@ -1011,9 +1029,11 @@ export const CloudAgentsDashboard: FC<CloudAgentsDashboardProps> = ({ initialCon
             </div>
           )}
           <div className="flex items-center gap-2 flex-shrink-0">
-            <span className={`text-xs px-2 py-1 rounded border font-medium ${statusStyle.bg} ${statusStyle.text} ${statusStyle.border}`}>
-              {currentAgent.status ?? 'UNKNOWN'}
-            </span>
+            {!isRunning && (
+              <span className={`text-xs px-2 py-1 rounded border font-medium ${statusStyle.bg} ${statusStyle.text} ${statusStyle.border}`}>
+                {currentAgent.status ?? 'UNKNOWN'}
+              </span>
+            )}
             <button
               type="button"
               onClick={() => void stop(currentAgent.id)}
@@ -1277,6 +1297,19 @@ export const CloudAgentsDashboard: FC<CloudAgentsDashboardProps> = ({ initialCon
 
           {/* Loading State */}
           {state.selectedAgentId && state.isConversationLoading && <ConversationSkeleton />}
+
+          {/* Live Status Indicator */}
+          {currentAgent?.status === 'RUNNING' && (
+            <div className="flex items-center justify-center py-2">
+              <div className="flex items-center gap-2 px-3 py-1.5 bg-emerald-500/10 border border-emerald-500/30 rounded-full">
+                <span className="relative flex h-2 w-2">
+                  <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-emerald-400 opacity-75"></span>
+                  <span className="relative inline-flex rounded-full h-2 w-2 bg-emerald-500"></span>
+                </span>
+                <span className="text-xs font-medium text-emerald-400">Live</span>
+              </div>
+            </div>
+          )}
 
           {/* Empty States */}
           {!state.selectedAgentId && !state.isConversationLoading && renderEmptyState(
