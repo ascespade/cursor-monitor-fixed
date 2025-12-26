@@ -576,8 +576,8 @@ export function useCloudAgents(options: UseCloudAgentsOptions = {}): {
     };
   }, [configId, apiKey, pollIntervalMs, loadUserInfo, loadAgents]);
 
-  // Enhanced conversation polling - SMART polling without webhooks
-  // Only poll when agent is RUNNING, with adaptive intervals based on activity
+  // Enhanced conversation polling - TRIGGERED BY WEBHOOKS + SMART polling
+  // Only poll when agent is RUNNING, with polling triggered by webhook status changes
   useEffect(() => {
     if (!state.selectedAgentId || !conversationPollIntervalMs || conversationPollIntervalMs <= 0) {
       return;
@@ -588,18 +588,24 @@ export function useCloudAgents(options: UseCloudAgentsOptions = {}): {
     const selectedAgent = state.agents.find((a) => a.id === currentAgentId);
     const isRunning = selectedAgent?.status === 'RUNNING';
 
-    // If not running, don't poll at all
+    // If not running, don't poll at all (wait for webhook to restart)
     if (!isRunning) {
       return;
     }
 
     let consecutiveNoChanges = 0;
-    const baseInterval = conversationPollIntervalMs; // Default 5-10 seconds
+    const baseInterval = conversationPollIntervalMs; // Default 5 seconds
     const maxIdleInterval = 15000; // 15 seconds max when idle
     const activeInterval = 3000; // 3 seconds when actively receiving messages
 
     const runPoll = async () => {
       if (!state.selectedAgentId || state.selectedAgentId !== currentAgentId) return;
+
+      // Double-check agent is still running
+      const agent = state.agents.find(a => a.id === currentAgentId);
+      if (!agent || agent.status !== 'RUNNING') {
+        return; // Stop polling if agent finished
+      }
 
       const result = await loadConversation(state.selectedAgentId, true);
 
@@ -611,7 +617,7 @@ export function useCloudAgents(options: UseCloudAgentsOptions = {}): {
       } else {
         // No new messages - increase interval gradually
         consecutiveNoChanges++;
-        const increaseFactor = Math.min(consecutiveNoChanges * 0.5, 2); // Cap at 2x
+        const increaseFactor = Math.min(consecutiveNoChanges * 0.5, 2);
         const nextInterval = Math.min(baseInterval * increaseFactor, maxIdleInterval);
         pollTimeoutRef.current = setTimeout(runPoll, nextInterval);
       }
