@@ -1,12 +1,12 @@
 /**
- * useCloudAgents - Professional Chat Behavior System
+ * useCloudAgents - Simplified Chat Behavior System
  *
  * Purpose:
- * - Manage Cursor Cloud Agents with polished chat experience
- * - Full unread messages tracking with decreasing counter
- * - Smart polling with exponential backoff and request cancellation
- * - Seamless message updates without full re-renders
- * - Professional UX matching MiniMax chat standards
+ * - Clean, predictable chat experience
+ * - When opening chat: fetch messages and scroll to last message
+ * - When sending message: add automatically to chat
+ * - When agent RUNNING: poll for new messages in background and add them
+ * - Simple tracking - no confusing "new messages" count
  */
 'use client';
 
@@ -39,11 +39,9 @@ interface UseCloudAgentsState {
     apiKeyName?: string;
     userEmail?: string;
   };
-  // Professional unread messages tracking system
-  pendingMessageCount: number;
-  unreadMessageIds: Set<string>; // Track specific unread message IDs
-  lastReadTimestamp: number; // Timestamp of last read for this conversation
-  isConversationLoading: boolean; // Loading state for conversation loading
+  isConversationLoading: boolean;
+  // Simple message tracking - only track which messages we received in current session
+  lastKnownMessageIds: Set<string>;
 }
 
 export function useCloudAgents(options: UseCloudAgentsOptions = {}): {
@@ -52,32 +50,26 @@ export function useCloudAgents(options: UseCloudAgentsOptions = {}): {
   refresh: () => Promise<void>;
   refreshConversation: () => Promise<void>;
   addMessageToConversation: (agentId: string, message: { type: string; text: string; id?: string; createdAt?: string }) => void;
-  markMessagesRead: (count?: number) => void;
   markAllMessagesRead: () => void;
-  scrollToFirstUnread: () => void;
 } {
   const [state, setState] = useState<UseCloudAgentsState>({
     agents: [],
     conversationsByAgentId: {},
     loading: false,
     userInfoLoading: false,
-    pendingMessageCount: 0,
-    unreadMessageIds: new Set(),
-    lastReadTimestamp: 0,
+    lastKnownMessageIds: new Set(),
     isConversationLoading: false
   });
 
-  const { configId, apiKey, pollIntervalMs, conversationPollIntervalMs = 5000 } = options;
+  const { configId, apiKey, pollIntervalMs, conversationPollIntervalMs = 3000 } = options;
 
   // Refs for polling management
   const abortControllerRef = useRef<AbortController | null>(null);
   const pollTimeoutRef = useRef<NodeJS.Timeout | null>(null);
-  const currentPollIntervalRef = useRef<number>(2000);
-  const consecutiveErrorsRef = useRef<number>(0);
-  const isPollingPausedRef = useRef<boolean>(false);
-  const loadConversationLockRef = useRef<boolean>(false);
-  const lastLoadTimeRef = useRef<number>(0);
+  const isPollingRef = useRef<boolean>(false);
+  const currentAgentIdRef = useRef<string>('');
 
+  // Load user info
   const loadUserInfo = useCallback(async (): Promise<void> => {
     if (!apiKey && !configId) {
       setState((prev) => ({
@@ -105,6 +97,7 @@ export function useCloudAgents(options: UseCloudAgentsOptions = {}): {
     }
   }, [apiKey, configId]);
 
+  // Load all agents
   const loadAgents = useCallback(async (): Promise<void> => {
     setState((prev) => ({ ...prev, loading: true, error: undefined }));
     try {
@@ -116,99 +109,38 @@ export function useCloudAgents(options: UseCloudAgentsOptions = {}): {
     }
   }, [apiKey, configId]);
 
-  // Enhanced message comparison - only detect genuinely new messages
-  const findNewMessages = useCallback((
+  // Get truly new messages that should be added
+  const getNewMessages = useCallback((
     currentMessages: any[],
     newMessages: any[]
-  ): { new: any[]; replacedTempIds: Set<string>; hasChanges: boolean } => {
+  ): { newMessages: any[]; replacedTempIds: Set<string> } => {
     const newMsgs: any[] = [];
     const replacedTempIds = new Set<string>();
-
-    // If lengths are different, there are definitely changes
-    if (currentMessages.length !== newMessages.length) {
-      const currentIds = new Set(currentMessages.map(m => m.id).filter(Boolean));
-      const currentTempContent = new Set(
-        currentMessages.filter(m => m.id?.startsWith('temp-')).map(m => `${m.type}-${m.text}`)
-      );
-
-      for (const msg of newMessages) {
-        // Check if this is a real message we already have
-        if (msg.id && currentIds.has(msg.id)) {
-          const tempMsg = currentMessages.find(
-            m => m.id?.startsWith('temp-') && m.type === msg.type && m.text === msg.text
-          );
-          if (tempMsg) replacedTempIds.add(tempMsg.id);
-          continue;
-        }
-
-        // Check if real message replaces temp
-        if (!msg.id?.startsWith('temp-') && currentTempContent.has(`${msg.type}-${msg.text}`)) {
-          const tempMsg = currentMessages.find(
-            m => m.id?.startsWith('temp-') && m.type === msg.type && m.text === msg.text
-          );
-          if (tempMsg) replacedTempIds.add(tempMsg.id);
-          continue;
-        }
-
-        newMsgs.push(msg);
-      }
-
-      return { new: newMsgs, replacedTempIds, hasChanges: true };
-    }
-
-    // Same length - check if IDs match
     const currentIds = new Set(currentMessages.map(m => m.id).filter(Boolean));
-    const newIds = new Set(newMessages.map(m => m.id).filter(Boolean));
-
-    // If all IDs match, no changes
-    if (currentIds.size === newIds.size && [...currentIds].every(id => newIds.has(id))) {
-      return { new: [], replacedTempIds: new Set(), hasChanges: false };
-    }
-
-    // IDs don't match - there are changes
-    const currentTempContent = new Set(
-      currentMessages.filter(m => m.id?.startsWith('temp-')).map(m => `${m.type}-${m.text}`)
-    );
 
     for (const msg of newMessages) {
+      // Skip if we already have this message (by ID)
       if (msg.id && currentIds.has(msg.id)) {
+        // Check if this real message replaces a temp message
         const tempMsg = currentMessages.find(
           m => m.id?.startsWith('temp-') && m.type === msg.type && m.text === msg.text
         );
-        if (tempMsg) replacedTempIds.add(tempMsg.id);
+        if (tempMsg) {
+          replacedTempIds.add(tempMsg.id);
+        }
         continue;
       }
 
-      if (!msg.id?.startsWith('temp-') && currentTempContent.has(`${msg.type}-${msg.text}`)) {
-        const tempMsg = currentMessages.find(
-          m => m.id?.startsWith('temp-') && m.type === msg.type && m.text === msg.text
-        );
-        if (tempMsg) replacedTempIds.add(tempMsg.id);
-        continue;
-      }
-
+      // This is a genuinely new message
       newMsgs.push(msg);
     }
 
-    return { new: newMsgs, replacedTempIds, hasChanges: newMsgs.length > 0 || replacedTempIds.size > 0 };
+    return { newMessages: newMsgs, replacedTempIds };
   }, []);
 
-  // Smart conversation loader with AbortController and exponential backoff
-  // IMPORTANT: Only call setState when there are actual changes to avoid re-renders
-  const loadConversation = useCallback(async (agentId: string, silent = false): Promise<{
-    hasNewMessages: boolean;
-    newMessageCount: number;
-    replacedTempIds: Set<string>;
-    newMessageIds: string[];
-  }> => {
-    // Rate limiting: prevent more than one request per 500ms
-    const now = Date.now();
-    if (now - lastLoadTimeRef.current < 500) {
-      return { hasNewMessages: false, newMessageCount: 0, replacedTempIds: new Set(), newMessageIds: [] };
-    }
-    lastLoadTimeRef.current = now;
-
-    // Create new AbortController for this request
+  // Load conversation for an agent
+  const loadConversation = useCallback(async (agentId: string, isInitialLoad = false): Promise<void> => {
+    // Cancel any pending request
     if (abortControllerRef.current) {
       abortControllerRef.current.abort();
     }
@@ -218,142 +150,52 @@ export function useCloudAgents(options: UseCloudAgentsOptions = {}): {
 
     try {
       const data = await fetchCloudAgentConversation(agentId, apiKey ? { apiKey } : { configId }, controller.signal);
-      const newMessages = data.messages ?? [];
+      const serverMessages = data.messages ?? [];
 
-      // Get current messages from state
-      let currentMessages: any[] = [];
       setState((prev) => {
-        const currentConv = prev.conversationsByAgentId[agentId] ?? prev.conversation;
-        currentMessages = currentConv?.messages ?? [];
-        return prev;
-      });
+        // Get current messages
+        const currentConversation = prev.conversationsByAgentId[agentId] ?? prev.conversation;
+        const currentMessages = currentConversation?.messages ?? [];
 
-      currentMessages = currentMessages || [];
+        // Get new messages
+        const { newMessages, replacedTempIds } = getNewMessages(currentMessages, serverMessages);
 
-      // Check if there are any changes
-      const { new: genuinelyNew, replacedTempIds, hasChanges } = findNewMessages(currentMessages, newMessages);
+        // Build merged messages array
+        let mergedMessages: any[];
 
-      // Reset error tracking on success
-      consecutiveErrorsRef.current = 0;
-      currentPollIntervalRef.current = 2000;
+        if (newMessages.length === 0 && replacedTempIds.size === 0) {
+          // No changes - keep current messages
+          mergedMessages = currentMessages;
+        } else {
+          // Remove replaced temp messages
+          const filteredMessages = currentMessages.filter(
+            m => !(m.id && replacedTempIds.has(m.id))
+          );
 
-      // Get current unread IDs
-      let currentUnreadIds: Set<string> = new Set();
-      setState((prev) => {
-        currentUnreadIds = new Set(prev.unreadMessageIds);
-        return prev;
-      });
+          // Add new messages
+          mergedMessages = [...filteredMessages, ...newMessages];
 
-      // If no changes, don't call setState at all (prevents re-render)
-      if (!hasChanges) {
-        return { hasNewMessages: false, newMessageCount: 0, replacedTempIds: new Set(), newMessageIds: [] };
-      }
-
-      // Identify truly new message IDs (not replacements)
-      const newMessageIds = genuinelyNew
-        .filter(m => !m.id?.startsWith('temp-') && !currentUnreadIds.has(m.id))
-        .map(m => m.id)
-        .filter((id): id is string => Boolean(id));
-
-      // There are changes - update state
-      setState((prev) => {
-        const currentConv = prev.conversationsByAgentId[agentId] ?? prev.conversation;
-        const msgs = currentConv?.messages ?? [];
-
-        // Recalculate in case state changed between our check and now
-        const { new: actualNew, replacedTempIds: actualReplaced } = findNewMessages(msgs, newMessages);
-
-        if (actualNew.length === 0 && actualReplaced.size === 0) {
-          return prev;
+          // Sort by createdAt
+          mergedMessages.sort((a, b) => {
+            const aTime = (a as { createdAt?: string })['createdAt']
+              ? new Date((a as { createdAt?: string })['createdAt']!).getTime() : 0;
+            const bTime = (b as { createdAt?: string })['createdAt']
+              ? new Date((b as { createdAt?: string })['createdAt']!).getTime() : 0;
+            return aTime - bTime;
+          });
         }
 
-        // Create merged messages preserving order - OPTIMIZED to preserve existing message references
-        // This prevents unnecessary re-renders when new messages arrive
-        const existingMessageMap = new Map<string, any>();
-        
-        // Preserve existing message references to prevent unnecessary re-renders
-        msgs.forEach((msg) => {
-          const msgId = msg.id || `temp-${msg.text}-${(msg as { createdAt?: string })['createdAt']}`;
-          existingMessageMap.set(msgId, msg);
+        // Track which message IDs we know about
+        const lastKnownIds = new Set(prev.lastKnownMessageIds);
+        mergedMessages.forEach(m => {
+          if (m.id) lastKnownIds.add(m.id);
         });
 
-        // Create new array by preserving existing message objects
-        // Only new/unmodified messages get new references
-        const mergedMessages: any[] = [];
-        const processedIds = new Set<string>();
-
-        // First pass: add existing messages in order, replace if needed
-        msgs.forEach((msg) => {
-          const msgId = msg.id || `temp-${msg.text}-${(msg as { createdAt?: string })['createdAt']}`;
-          processedIds.add(msgId);
-          
-          // Check if this temp message was replaced by a real message
-          const isReplacedTemp = msg.id?.startsWith('temp-') && 
-            actualReplaced.has(msg.id) &&
-            newMessages.some(m => !m.id?.startsWith('temp-') && m.type === msg.type && m.text === msg.text);
-          
-          if (isReplacedTemp) {
-            // Don't add replaced temp messages - they'll be replaced by real messages below
-            return;
-          }
-          
-          // Check if we have a newer version of this message
-          const newerMsg = newMessages.find(m => {
-            const newMsgId = m.id || `temp-${m.text}-${(m as { createdAt?: string })['createdAt']}`;
-            return newMsgId === msgId && m !== msg;
-          });
-          
-          if (newerMsg) {
-            // Use the newer message object
-            mergedMessages.push(newerMsg);
-          } else {
-            // Preserve the original message object reference
-            mergedMessages.push(msg);
-          }
-        });
-
-        // Second pass: add new messages that weren't in the original list
-        newMessages.forEach((msg) => {
-          const msgId = msg.id || `temp-${msg.text}-${(msg as { createdAt?: string })['createdAt']}`;
-          
-          // Skip if we already processed this message (either as existing or replacement)
-          if (processedIds.has(msgId)) return;
-          
-          // Check if this is a replacement for a temp message
-          const wasTempReplaced = msg.id?.startsWith('temp-') === false &&
-            msgs.some(m => m.id?.startsWith('temp-') && 
-              (m as { createdAt?: string })['createdAt'] === (msg as { createdAt?: string })['createdAt'] &&
-              m.type === msg.type && m.text === msg.text);
-          
-          if (wasTempReplaced) {
-            // This real message replaces a temp - skip since we already handled it
-            return;
-          }
-          
-          mergedMessages.push(msg);
-        });
-
-        // Sort by createdAt while preserving object references for existing messages
-        mergedMessages.sort((a, b) => {
-          const aTime = (a as { createdAt?: string })['createdAt']
-            ? new Date((a as { createdAt?: string })['createdAt']!).getTime() : 0;
-          const bTime = (b as { createdAt?: string })['createdAt']
-            ? new Date((b as { createdAt?: string })['createdAt']!).getTime() : 0;
-          return aTime - bTime;
-        });
-
+        // Update state
         const updatedConversation: CursorConversationResponse = {
           ...data,
           messages: mergedMessages
         };
-
-        // Update unread tracking - only add genuinely new messages
-        const newUnreadIds = new Set(prev.unreadMessageIds);
-        genuinelyNew.forEach((msg) => {
-          if (msg.id && !msg.id.startsWith('temp-')) {
-            newUnreadIds.add(msg.id);
-          }
-        });
 
         return {
           ...prev,
@@ -362,93 +204,68 @@ export function useCloudAgents(options: UseCloudAgentsOptions = {}): {
             ...prev.conversationsByAgentId,
             [agentId]: updatedConversation
           },
-          pendingMessageCount: newUnreadIds.size,
-          unreadMessageIds: newUnreadIds,
+          lastKnownMessageIds: lastKnownIds,
           isConversationLoading: false
         };
       });
-
-      return {
-        hasNewMessages: genuinelyNew.length > 0 || replacedTempIds.size > 0,
-        newMessageCount: genuinelyNew.length,
-        replacedTempIds,
-        newMessageIds
-      };
     } catch (error) {
       if (error instanceof Error && error.name === 'AbortError') {
-        return { hasNewMessages: false, newMessageCount: 0, replacedTempIds: new Set(), newMessageIds: [] };
+        return;
       }
 
-      // Track consecutive errors for exponential backoff
-      consecutiveErrorsRef.current++;
-      currentPollIntervalRef.current = Math.min(2000 * Math.pow(2, consecutiveErrorsRef.current - 1), 30000);
-
-      if (!silent) {
-        const message = error instanceof Error ? error.message : 'Failed to load conversation';
-        setState((prev) => ({ ...prev, error: message, isConversationLoading: false }));
-      }
-
-      return { hasNewMessages: false, newMessageCount: 0, replacedTempIds: new Set(), newMessageIds: [] };
+      const message = error instanceof Error ? error.message : 'Failed to load conversation';
+      setState((prev) => ({ ...prev, error: message, isConversationLoading: false }));
     }
-  }, [apiKey, configId, findNewMessages]);
+  }, [apiKey, configId, getNewMessages]);
 
+  // Select an agent - fetch conversation and prepare for polling
   const selectAgent = useCallback(async (id: string): Promise<void> => {
+    // Clear any pending polling
+    if (pollTimeoutRef.current) {
+      clearTimeout(pollTimeoutRef.current);
+      pollTimeoutRef.current = null;
+    }
+    isPollingRef.current = false;
+
     if (!id) {
       setState((prev) => ({
         ...prev,
         selectedAgentId: undefined,
         conversation: undefined,
-        isConversationLoading: false,
-        // Keep unread tracking but don't show pending count when no agent selected
-        pendingMessageCount: 0
+        isConversationLoading: false
       }));
       return;
     }
 
-    // Cancel any pending polling
-    if (pollTimeoutRef.current) {
-      clearTimeout(pollTimeoutRef.current);
-      pollTimeoutRef.current = null;
-    }
-
-    // Cancel any pending conversation load
-    if (abortControllerRef.current) {
-      abortControllerRef.current.abort();
-    }
-
-    // Check if conversation is already cached
-    const existingConversation = state.conversationsByAgentId[id];
-    const shouldShowLoading = !existingConversation;
-
+    // Update selected agent
     setState((prev) => ({
       ...prev,
       selectedAgentId: id,
-      conversation: existingConversation ?? prev.conversation,
-      isConversationLoading: shouldShowLoading,
-      // Don't reset unread tracking - user might come back to this conversation
+      isConversationLoading: true
     }));
 
-    // Reset polling interval
-    currentPollIntervalRef.current = 2000;
-    consecutiveErrorsRef.current = 0;
+    currentAgentIdRef.current = id;
 
-    // Load conversation (will show loading state if not cached)
-    await loadConversation(id);
-  }, [state.conversationsByAgentId, loadConversation]);
+    // Fetch conversation immediately
+    await loadConversation(id, true);
+  }, [loadConversation]);
 
+  // Refresh agents list
   const refresh = useCallback(async (): Promise<void> => {
     await loadAgents();
     if (state.selectedAgentId) {
-      await loadConversation(state.selectedAgentId, false);
+      await loadConversation(state.selectedAgentId);
     }
   }, [loadAgents, loadConversation, state.selectedAgentId]);
 
+  // Force refresh conversation
   const refreshConversation = useCallback(async (): Promise<void> => {
     if (state.selectedAgentId) {
-      await loadConversation(state.selectedAgentId, false);
+      await loadConversation(state.selectedAgentId);
     }
   }, [loadConversation, state.selectedAgentId]);
 
+  // Add message to conversation (used when user sends a message)
   const addMessageToConversation = useCallback((agentId: string, message: {
     type: string;
     text: string;
@@ -457,55 +274,38 @@ export function useCloudAgents(options: UseCloudAgentsOptions = {}): {
   }): void => {
     setState((prev) => {
       const currentConversation = prev.conversationsByAgentId[agentId] ?? prev.conversation;
-      const newMessage = {
+      const existingMessages = currentConversation?.messages ?? [];
+
+      // Create temp message
+      const tempMessage = {
         ...message,
         id: message.id ?? `temp-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`,
         createdAt: message.createdAt ?? new Date().toISOString()
       };
 
-      // Prevent duplicates
-      const existingMessages = currentConversation?.messages ?? [];
-      const messageExists = existingMessages.some((msg) => {
-        if (msg.id === newMessage.id) return true;
-        if (msg.text === newMessage.text && msg.type === newMessage.type) {
-          const msgCreatedAt = (msg as { createdAt?: string })['createdAt'];
-          const msgTime = msgCreatedAt ? new Date(msgCreatedAt).getTime() : 0;
-          const newMsgTime = new Date(newMessage.createdAt).getTime();
-          return Math.abs(msgTime - newMsgTime) < 1000;
-        }
-        return false;
-      });
+      // Check for duplicates
+      const exists = existingMessages.some(m =>
+        m.id === tempMessage.id ||
+        (m.text === tempMessage.text && m.type === tempMessage.type)
+      );
 
-      if (messageExists) {
+      if (exists) {
         return prev;
       }
 
-      const updatedMessages = [...existingMessages, newMessage];
+      const updatedMessages = [...existingMessages, tempMessage];
       const updatedConversation: CursorConversationResponse = {
         ...currentConversation,
         messages: updatedMessages
       };
 
-      // Update unread tracking - user's own messages are not unread
-      const newUnreadIds = new Set(prev.unreadMessageIds);
-      if (newMessage.id && !newMessage.id.startsWith('temp-')) {
-        newUnreadIds.add(newMessage.id);
-      }
-
-      // Update agent status to RUNNING immediately when user sends a message
+      // Update agent status to RUNNING
       const updatedAgents = prev.agents.map((agent) => {
         if (agent.id === agentId && agent.status !== 'RUNNING') {
-          return {
-            ...agent,
-            status: 'RUNNING' as const
-          };
+          return { ...agent, status: 'RUNNING' as const };
         }
         return agent;
       });
-
-      // Reset polling interval for faster updates
-      currentPollIntervalRef.current = 2000;
-      consecutiveErrorsRef.current = 0;
 
       return {
         ...prev,
@@ -514,153 +314,84 @@ export function useCloudAgents(options: UseCloudAgentsOptions = {}): {
         conversationsByAgentId: {
           ...prev.conversationsByAgentId,
           [agentId]: updatedConversation
-        },
-        pendingMessageCount: newUnreadIds.size,
-        unreadMessageIds: newUnreadIds
-      };
-    });
-  }, []);
-
-  // Mark specific number of messages as read (from bottom)
-  const markMessagesRead = useCallback((count: number = 1): void => {
-    setState((prev) => {
-      const messages = prev.conversation?.messages ?? [];
-      const currentUnreadIds = new Set(prev.unreadMessageIds);
-      let removed = 0;
-
-      // Remove from end (oldest unread first)
-      for (let i = messages.length - 1; i >= 0 && removed < count; i--) {
-        const msg = messages[i];
-        if (msg && msg.id && currentUnreadIds.has(msg.id) && !msg.id.startsWith('temp-')) {
-          currentUnreadIds.delete(msg.id);
-          removed++;
         }
-      }
-
-      return {
-        ...prev,
-        pendingMessageCount: currentUnreadIds.size,
-        unreadMessageIds: currentUnreadIds,
-        lastReadTimestamp: Date.now()
       };
     });
   }, []);
 
-  // Mark all messages as read
+  // Mark all messages as read (clears any tracking)
   const markAllMessagesRead = useCallback((): void => {
     setState((prev) => ({
       ...prev,
-      pendingMessageCount: 0,
-      unreadMessageIds: new Set(),
-      lastReadTimestamp: Date.now()
+      lastKnownMessageIds: new Set<string>(
+        (prev.conversation?.messages ?? []).map(m => m.id).filter((id): id is string => Boolean(id))
+      )
     }));
   }, []);
 
-  // Get ID of first unread message for scrolling
-  const scrollToFirstUnread = useCallback((): string | undefined => {
-    let firstUnreadId: string | undefined;
-    setState((prev) => {
-      const messages = prev.conversation?.messages ?? [];
-      // Find first message that is unread
-      for (const msg of messages) {
-        if (msg.id && prev.unreadMessageIds.has(msg.id) && !msg.id.startsWith('temp-')) {
-          firstUnreadId = msg.id;
-          break;
-        }
-      }
-      return prev;
-    });
-    return firstUnreadId;
-  }, []);
-
-  // Smart polling with exponential backoff and visibility handling
+  // Load agents and user info on mount
   useEffect(() => {
     void loadUserInfo();
     void loadAgents();
+  }, [configId, apiKey, loadUserInfo, loadAgents]);
 
-    const interval =
-      pollIntervalMs && pollIntervalMs > 0
-        ? window.setInterval(() => {
-            void loadAgents();
-          }, pollIntervalMs)
-        : undefined;
-
-    return () => {
-      if (interval) {
-        window.clearInterval(interval);
-      }
-    };
-  }, [configId, apiKey, pollIntervalMs, loadUserInfo, loadAgents]);
-
-  // Enhanced conversation polling - TRIGGERED BY WEBHOOKS + SMART polling
-  // Only poll when agent is RUNNING, with polling triggered by webhook status changes
+  // Polling effect - only when agent is RUNNING
   useEffect(() => {
-    if (!state.selectedAgentId || !conversationPollIntervalMs || conversationPollIntervalMs <= 0) {
+    if (!state.selectedAgentId || !conversationPollIntervalMs) {
       return;
     }
+
+    const agentId = state.selectedAgentId;
+    const agent = state.agents.find(a => a.id === agentId);
 
     // Only poll if agent is RUNNING
-    const currentAgentId = state.selectedAgentId;
-    const selectedAgent = state.agents.find((a) => a.id === currentAgentId);
-    const isRunning = selectedAgent?.status === 'RUNNING';
-
-    // If not running, don't poll at all (wait for webhook to restart)
-    if (!isRunning) {
+    if (agent?.status !== 'RUNNING') {
       return;
     }
 
-    let consecutiveNoChanges = 0;
-    const baseInterval = conversationPollIntervalMs; // Default 5 seconds
-    const maxIdleInterval = 15000; // 15 seconds max when idle
-    const activeInterval = 3000; // 3 seconds when actively receiving messages
+    // Don't poll if we're already polling this agent
+    if (isPollingRef.current && currentAgentIdRef.current === agentId) {
+      return;
+    }
 
-    const runPoll = async () => {
-      if (!state.selectedAgentId || state.selectedAgentId !== currentAgentId) return;
+    isPollingRef.current = true;
+    currentAgentIdRef.current = agentId;
 
-      // Double-check agent is still running
-      const agent = state.agents.find(a => a.id === currentAgentId);
-      if (!agent || agent.status !== 'RUNNING') {
-        return; // Stop polling if agent finished
+    const pollInterval = conversationPollIntervalMs;
+
+    const poll = async () => {
+      // Check if we should still be polling
+      if (!isPollingRef.current || currentAgentIdRef.current !== agentId) {
+        return;
       }
 
-      const result = await loadConversation(state.selectedAgentId, true);
+      // Double-check agent is still running
+      setState((prev) => {
+        const currentAgent = prev.agents.find(a => a.id === agentId);
+        if (currentAgent?.status !== 'RUNNING') {
+          isPollingRef.current = false;
+        }
+        return prev;
+      });
 
-      // Adaptive polling based on activity
-      if (result.hasNewMessages) {
-        // Agent is active - poll faster
-        consecutiveNoChanges = 0;
-        pollTimeoutRef.current = setTimeout(runPoll, activeInterval);
-      } else {
-        // No new messages - increase interval gradually
-        consecutiveNoChanges++;
-        const increaseFactor = Math.min(consecutiveNoChanges * 0.5, 2);
-        const nextInterval = Math.min(baseInterval * increaseFactor, maxIdleInterval);
-        pollTimeoutRef.current = setTimeout(runPoll, nextInterval);
+      await loadConversation(agentId, false);
+
+      // Schedule next poll
+      if (isPollingRef.current) {
+        pollTimeoutRef.current = setTimeout(poll, pollInterval);
       }
     };
 
-    // Start with base interval
-    pollTimeoutRef.current = setTimeout(runPoll, baseInterval);
+    // Start polling
+    pollTimeoutRef.current = setTimeout(poll, pollInterval);
 
     return () => {
       if (pollTimeoutRef.current) {
         clearTimeout(pollTimeoutRef.current);
       }
-      if (abortControllerRef.current) {
-        abortControllerRef.current.abort();
-      }
+      isPollingRef.current = false;
     };
-  }, [state.selectedAgentId, state.agents, conversationPollIntervalMs, configId, apiKey, loadConversation]);
-
-  // Pause polling when tab is not visible (save resources)
-  useEffect(() => {
-    const handleVisibilityChange = () => {
-      isPollingPausedRef.current = document.hidden;
-    };
-
-    document.addEventListener('visibilitychange', handleVisibilityChange);
-    return () => document.removeEventListener('visibilitychange', handleVisibilityChange);
-  }, []);
+  }, [state.selectedAgentId, state.agents, conversationPollIntervalMs, loadConversation]);
 
   return {
     state,
@@ -668,8 +399,6 @@ export function useCloudAgents(options: UseCloudAgentsOptions = {}): {
     refresh,
     refreshConversation,
     addMessageToConversation,
-    markMessagesRead,
-    markAllMessagesRead,
-    scrollToFirstUnread
+    markAllMessagesRead
   };
 }

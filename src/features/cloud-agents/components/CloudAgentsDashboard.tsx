@@ -234,7 +234,6 @@ const AgentCard: FC<AgentCardProps> = ({
 
 interface MessageItemProps {
   message: CursorConversationMessage;
-  isUnread: boolean;
   copiedId: string | null;
   onCopy: (id: string) => void;
   onCopyFull: (id: string, text: string) => void;
@@ -248,7 +247,7 @@ function getMessageStableId(message: CursorConversationMessage): string {
   return `temp-${message.type}-${textSnippet}-${(message as { createdAt?: string })['createdAt'] ?? 'no-time'}`;
 }
 
-const MessageItem: FC<MessageItemProps> = memo(({ message, isUnread, copiedId, onCopy, onCopyFull }) => {
+const MessageItem: FC<MessageItemProps> = memo(({ message, copiedId, onCopy, onCopyFull }) => {
   const isUser = message.type === 'user_message';
   const createdAt = typeof message['createdAt'] === 'string'
     ? new Date(message['createdAt']).toLocaleString('en-US', {
@@ -280,7 +279,7 @@ const MessageItem: FC<MessageItemProps> = memo(({ message, isUnread, copiedId, o
   return (
     <div
       id={message.id ? `message-${message.id}` : undefined}
-      className={`flex gap-3 ${isUser ? 'justify-end' : 'justify-start'} ${isUnread ? 'bg-unread-highlight/30 rounded-lg -mx-2 px-2' : ''}`}
+      className={`flex gap-3 ${isUser ? 'justify-end' : 'justify-start'}`}
     >
       <div className={`max-w-[85%] sm:max-w-[75%] rounded-2xl px-4 py-3 backdrop-blur-sm ${
         isUser
@@ -294,11 +293,6 @@ const MessageItem: FC<MessageItemProps> = memo(({ message, isUnread, copiedId, o
           {createdAt && (
             <span className="text-[0.65rem] text-muted-foreground/70">
               {new Date(message['createdAt'] as string).toLocaleDateString('en-US', { month: 'short', day: 'numeric' })} • {new Date(message['createdAt'] as string).toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit', hour12: false })}
-            </span>
-          )}
-          {isUnread && (
-            <span className="text-[0.6rem] px-1.5 py-0.5 bg-primary/20 text-primary rounded-full">
-              New
             </span>
           )}
         </div>
@@ -409,9 +403,6 @@ export const CloudAgentsDashboard: FC<CloudAgentsDashboardProps> = ({ initialCon
   const previousMessageIdsRef = useRef<Set<string>>(new Set());
   const isUserScrolledUpRef = useRef<boolean>(false);
   const lastAutoScrollTimeRef = useRef<number>(0);
-  const pendingMessageCountRef = useRef<number>(0);
-  const [showNewMessagesButton, setShowNewMessagesButton] = useState(false);
-  const [firstUnreadId, setFirstUnreadId] = useState<string | undefined>(undefined);
 
   // Derived values
   const primaryConfigId = selectedConfigIds[0];
@@ -425,7 +416,6 @@ export const CloudAgentsDashboard: FC<CloudAgentsDashboardProps> = ({ initialCon
     refresh,
     refreshConversation,
     addMessageToConversation,
-    markMessagesRead,
     markAllMessagesRead
   } = useCloudAgents({
     configId: primaryConfigId,
@@ -495,19 +485,7 @@ export const CloudAgentsDashboard: FC<CloudAgentsDashboardProps> = ({ initialCon
     loadData();
   }, [primaryApiKey]);
 
-  // Update first unread ID when unread messages change
-  useEffect(() => {
-    const messages = state.conversation?.messages ?? [];
-    for (const msg of messages) {
-      if (msg.id && state.unreadMessageIds.has(msg.id) && !msg.id.startsWith('temp-')) {
-        setFirstUnreadId(msg.id);
-        break;
-      }
-    }
-    if (state.unreadMessageIds.size === 0) {
-      setFirstUnreadId(undefined);
-    }
-  }, [state.unreadMessageIds, state.conversation?.messages]);
+
 
   // Auto-scroll when new messages arrive
   useEffect(() => {
@@ -539,11 +517,10 @@ export const CloudAgentsDashboard: FC<CloudAgentsDashboardProps> = ({ initialCon
     previousMessageIdsRef.current = currentMessageIds;
   }, [state.selectedAgentId, state.conversation?.messages]);
 
-  // Scroll on agent selection change
+  // Scroll to bottom when agent is selected (fetch messages and go to last)
   useEffect(() => {
     if (state.selectedAgentId && conversationEndRef.current) {
       isUserScrolledUpRef.current = false;
-      setShowNewMessagesButton(false);
       previousMessageIdsRef.current = new Set();
       lastAutoScrollTimeRef.current = 0;
 
@@ -552,11 +529,6 @@ export const CloudAgentsDashboard: FC<CloudAgentsDashboardProps> = ({ initialCon
       });
     }
   }, [state.selectedAgentId]);
-
-  // Update ref when pendingMessageCount changes (for use in scroll callbacks)
-  useEffect(() => {
-    pendingMessageCountRef.current = state.pendingMessageCount;
-  }, [state.pendingMessageCount]);
 
   // Debounce search query
   useEffect(() => {
@@ -619,38 +591,12 @@ export const CloudAgentsDashboard: FC<CloudAgentsDashboardProps> = ({ initialCon
     const { scrollTop, scrollHeight, clientHeight } = conversationContainerRef.current;
     const scrollThreshold = 100;
     const isAtBottom = scrollHeight - scrollTop - clientHeight <= scrollThreshold;
-
-    const wasScrolledUp = isUserScrolledUpRef.current;
     isUserScrolledUpRef.current = !isAtBottom;
-
-    // Use ref for current pending count to avoid stale closures
-    const pendingCount = pendingMessageCountRef.current;
-    const shouldShowButton = !isAtBottom && pendingCount > 0;
-    setShowNewMessagesButton(shouldShowButton);
-
-    // Auto-mark as read when scrolling to bottom
-    if (wasScrolledUp && isAtBottom && pendingCount > 0) {
-      // Only mark messages as read if we haven't already handled them
-      markMessagesRead(pendingCount);
-    }
-  }, [markMessagesRead]);
-
-  const scrollToFirstUnread = useCallback(() => {
-    if (firstUnreadId) {
-      const el = document.getElementById(`message-${firstUnreadId}`);
-      if (el) {
-        isUserScrolledUpRef.current = false;
-        setShowNewMessagesButton(false);
-        el.scrollIntoView({ behavior: 'smooth', block: 'center' });
-        markMessagesRead(1);
-      }
-    }
-  }, [firstUnreadId, markMessagesRead]);
+  }, []);
 
   const scrollToBottom = useCallback(() => {
     if (conversationEndRef.current) {
       isUserScrolledUpRef.current = false;
-      setShowNewMessagesButton(false);
       conversationEndRef.current.scrollIntoView({ behavior: 'smooth', block: 'end' });
       markAllMessagesRead();
     }
@@ -1313,20 +1259,6 @@ export const CloudAgentsDashboard: FC<CloudAgentsDashboardProps> = ({ initialCon
             </div>
           </div>
 
-          {/* New Messages Button */}
-          {showNewMessagesButton && state.pendingMessageCount > 0 && (
-            <button
-              type="button"
-              onClick={scrollToFirstUnread}
-              className="absolute bottom-4 left-1/2 -translate-x-1/2 z-20 bg-primary text-primary-foreground px-4 py-2 rounded-full shadow-lg text-sm font-medium animate-fadeInUp flex items-center gap-2 hover:bg-primary-hover transition-colors"
-            >
-              <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 14l-7 7m0 0l-7-7m7 7V3" />
-              </svg>
-              {state.pendingMessageCount} new message{state.pendingMessageCount > 1 ? 's' : ''}
-            </button>
-          )}
-
           {/* Loading State */}
           {state.selectedAgentId && state.isConversationLoading && <ConversationSkeleton />}
 
@@ -1387,7 +1319,6 @@ export const CloudAgentsDashboard: FC<CloudAgentsDashboardProps> = ({ initialCon
                   <MessageItem
                     key={getMessageStableId(msg)}
                     message={msg}
-                    isUnread={msg.id ? state.unreadMessageIds.has(msg.id) && !msg.id.startsWith('temp-') : false}
                     copiedId={copiedMessageId}
                     onCopy={handleCopyMessage}
                     onCopyFull={handleCopyFullReply}
