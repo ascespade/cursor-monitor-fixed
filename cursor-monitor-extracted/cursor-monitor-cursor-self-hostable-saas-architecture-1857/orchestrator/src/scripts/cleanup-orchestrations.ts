@@ -85,7 +85,7 @@ async function fixAndRetryOrchestration(orchestrationId: string): Promise<boolea
 
     // Validate and fix model
     const currentModel = orchestration.model || '';
-    const validationResult = await validateModel(currentModel, apiKey, {
+    const validationResult = await validateModel(currentModel, apiKey || '', {
       allowDeprecated: false,
       useFallback: true,
       forceRefreshCache: false,
