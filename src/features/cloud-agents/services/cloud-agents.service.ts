@@ -4,6 +4,7 @@
  * Purpose:
  * - Provide a thin abstraction over the internal `/api/cloud-agents/*`
  *   routes for use in client-side hooks and components.
+ * - Support request cancellation via AbortController for polling optimization
  */
 import type {
   CursorAgent,
@@ -41,14 +42,12 @@ export async function fetchCloudAgentConfigs(): Promise<{
 }
 
 interface ListAgentsOptionsWithApiKey extends ListAgentsOptions {
-  apiKey?: string; // API key from localStorage
+  apiKey?: string;
 }
 
 export async function fetchCloudAgents(options: ListAgentsOptionsWithApiKey = {}): Promise<CursorListAgentsResponse> {
   const params = new URLSearchParams();
 
-  // Priority: apiKey (from localStorage) > configId (including env_cursor_api_key)
-  // For env var configs, prefer configId over apiKey to use server-side env var
   if (options.configId === 'env_cursor_api_key') {
     params.set('configId', options.configId);
   } else if (options.apiKey) {
@@ -57,7 +56,7 @@ export async function fetchCloudAgents(options: ListAgentsOptionsWithApiKey = {}
     params.set('configId', options.configId);
   }
   if (options.limit != null) params.set('limit', String(options.limit));
-  if (options.cursor) params.set('cursor', options.cursor);
+  if (options.cursor) params.set('cursor', String(options.cursor));
 
   const response = await fetch(`/api/cloud-agents/agents?${params.toString()}`);
   if (!response.ok) throw new Error('Failed to load cloud agents');
@@ -67,10 +66,10 @@ export async function fetchCloudAgents(options: ListAgentsOptionsWithApiKey = {}
 export async function fetchCloudAgent(
   id: string,
   configId?: string,
-  apiKey?: string
+  apiKey?: string,
+  signal?: AbortSignal
 ): Promise<CursorAgent> {
   const params = new URLSearchParams();
-  // For env var configs, prefer configId over apiKey
   if (configId === 'env_cursor_api_key') {
     params.set('configId', configId);
   } else if (apiKey) {
@@ -79,17 +78,19 @@ export async function fetchCloudAgent(
     params.set('configId', configId);
   }
 
-  const response = await fetch(`/api/cloud-agents/agents/${encodeURIComponent(id)}?${params.toString()}`);
+  const response = await fetch(`/api/cloud-agents/agents/${encodeURIComponent(id)}?${params.toString()}`, {
+    signal
+  });
   if (!response.ok) throw new Error('Failed to load agent');
   return parseOkResponse<CursorAgent>(response);
 }
 
 export async function fetchCloudAgentConversation(
   id: string,
-  options?: { configId?: string; apiKey?: string }
+  options?: { configId?: string; apiKey?: string },
+  signal?: AbortSignal
 ): Promise<CursorConversationResponse> {
   const params = new URLSearchParams();
-  // For env var configs, prefer configId over apiKey
   if (options?.configId === 'env_cursor_api_key') {
     params.set('configId', options.configId);
   } else if (options?.apiKey) {
@@ -99,7 +100,8 @@ export async function fetchCloudAgentConversation(
   }
 
   const response = await fetch(
-    `/api/cloud-agents/agents/${encodeURIComponent(id)}/conversation?${params.toString()}`
+    `/api/cloud-agents/agents/${encodeURIComponent(id)}/conversation?${params.toString()}`,
+    { signal }
   );
   if (!response.ok) throw new Error('Failed to load conversation');
   return parseOkResponse<CursorConversationResponse>(response);
@@ -114,10 +116,10 @@ export async function launchCloudAgent(
     ref?: string;
     model?: string;
     autoCreatePr?: boolean;
-  }
+  },
+  signal?: AbortSignal
 ): Promise<CursorAgent> {
   const params = new URLSearchParams();
-  // For env var configs, prefer configId over apiKey
   if (payload.configId === 'env_cursor_api_key') {
     params.set('configId', payload.configId);
   } else if (payload.apiKey) {
@@ -141,7 +143,8 @@ export async function launchCloudAgent(
         autoCreatePr: payload.autoCreatePr ?? true
       },
       model: payload.model
-    })
+    }),
+    signal
   });
 
   if (!response.ok) throw new Error('Failed to launch agent');
@@ -150,10 +153,10 @@ export async function launchCloudAgent(
 
 export async function addCloudAgentFollowup(
   id: string,
-  payload: { configId?: string; apiKey?: string; promptText: string }
+  payload: { configId?: string; apiKey?: string; promptText: string },
+  signal?: AbortSignal
 ): Promise<{ id: string }> {
   const params = new URLSearchParams();
-  // For env var configs, prefer configId over apiKey
   if (payload.configId === 'env_cursor_api_key') {
     params.set('configId', payload.configId);
   } else if (payload.apiKey) {
@@ -167,7 +170,8 @@ export async function addCloudAgentFollowup(
     {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ promptText: payload.promptText })
+      body: JSON.stringify({ promptText: payload.promptText }),
+      signal
     }
   );
 
@@ -177,7 +181,8 @@ export async function addCloudAgentFollowup(
 
 export async function stopCloudAgent(
   id: string,
-  options?: { configId?: string; apiKey?: string }
+  options?: { configId?: string; apiKey?: string },
+  signal?: AbortSignal
 ): Promise<{ id: string }> {
   const params = new URLSearchParams();
   if (options?.apiKey) {
@@ -187,7 +192,8 @@ export async function stopCloudAgent(
   }
 
   const response = await fetch(`/api/cloud-agents/agents/${encodeURIComponent(id)}/stop?${params.toString()}`, {
-    method: 'POST'
+    method: 'POST',
+    signal
   });
 
   if (!response.ok) throw new Error('Failed to stop agent');
@@ -196,10 +202,10 @@ export async function stopCloudAgent(
 
 export async function deleteCloudAgent(
   id: string,
-  options?: { configId?: string; apiKey?: string }
+  options?: { configId?: string; apiKey?: string },
+  signal?: AbortSignal
 ): Promise<{ id: string }> {
   const params = new URLSearchParams();
-  // For env var configs, prefer configId over apiKey
   if (options?.configId === 'env_cursor_api_key') {
     params.set('configId', options.configId);
   } else if (options?.apiKey) {
@@ -209,16 +215,19 @@ export async function deleteCloudAgent(
   }
 
   const response = await fetch(`/api/cloud-agents/agents/${encodeURIComponent(id)}?${params.toString()}`, {
-    method: 'DELETE'
+    method: 'DELETE',
+    signal
   });
 
   if (!response.ok) throw new Error('Failed to delete agent');
   return parseOkResponse<{ id: string }>(response);
 }
 
-export async function fetchCloudAgentUserInfo(options?: { configId?: string; apiKey?: string }): Promise<CursorUserInfo> {
+export async function fetchCloudAgentUserInfo(
+  options?: { configId?: string; apiKey?: string },
+  signal?: AbortSignal
+): Promise<CursorUserInfo> {
   const params = new URLSearchParams();
-  // For env var configs, prefer configId over apiKey
   if (options?.configId === 'env_cursor_api_key') {
     params.set('configId', options.configId);
   } else if (options?.apiKey) {
@@ -227,14 +236,16 @@ export async function fetchCloudAgentUserInfo(options?: { configId?: string; api
     params.set('configId', options.configId);
   }
 
-  const response = await fetch(`/api/cloud-agents/me?${params.toString()}`);
+  const response = await fetch(`/api/cloud-agents/me?${params.toString()}`, { signal });
   if (!response.ok) throw new Error('Failed to load API user info');
   return parseOkResponse<CursorUserInfo>(response);
 }
 
-export async function fetchCloudAgentModels(options?: { configId?: string; apiKey?: string }): Promise<CursorModelListResponse> {
+export async function fetchCloudAgentModels(
+  options?: { configId?: string; apiKey?: string },
+  signal?: AbortSignal
+): Promise<CursorModelListResponse> {
   const params = new URLSearchParams();
-  // For env var configs, prefer configId over apiKey
   if (options?.configId === 'env_cursor_api_key') {
     params.set('configId', options.configId);
   } else if (options?.apiKey) {
@@ -243,16 +254,16 @@ export async function fetchCloudAgentModels(options?: { configId?: string; apiKe
     params.set('configId', options.configId);
   }
 
-  const response = await fetch(`/api/cloud-agents/models?${params.toString()}`);
+  const response = await fetch(`/api/cloud-agents/models?${params.toString()}`, { signal });
   if (!response.ok) throw new Error('Failed to load models');
   return parseOkResponse<CursorModelListResponse>(response);
 }
 
 export async function fetchCloudAgentRepositories(
-  options?: { configId?: string; apiKey?: string }
+  options?: { configId?: string; apiKey?: string },
+  signal?: AbortSignal
 ): Promise<CursorRepositoriesResponse> {
   const params = new URLSearchParams();
-  // For env var configs, prefer configId over apiKey
   if (options?.configId === 'env_cursor_api_key') {
     params.set('configId', options.configId);
   } else if (options?.apiKey) {
@@ -261,7 +272,7 @@ export async function fetchCloudAgentRepositories(
     params.set('configId', options.configId);
   }
 
-  const response = await fetch(`/api/cloud-agents/repositories?${params.toString()}`);
+  const response = await fetch(`/api/cloud-agents/repositories?${params.toString()}`, { signal });
   if (!response.ok) throw new Error('Failed to load repositories');
   return parseOkResponse<CursorRepositoriesResponse>(response);
 }

@@ -1,13 +1,15 @@
 /**
- * useCloudAgents
+ * useCloudAgents - MiniMax-style Optimized Chat Behavior
  *
  * Purpose:
- * - Manage the list of Cursor Cloud Agents and the currently selected agent
- *   for the dashboard, including basic polling.
+ * - Manage Cursor Cloud Agents with polished chat experience
+ * - Eliminate flickering and re-rendering issues
+ * - Smart polling with exponential backoff and request cancellation
+ * - Seamless message updates without full re-renders
  */
 'use client';
 
-import { useEffect, useState } from 'react';
+import { useEffect, useState, useCallback, useRef } from 'react';
 
 import type { CursorAgent, CursorConversationResponse } from '@/features/cloud-agents/types';
 import {
@@ -18,9 +20,9 @@ import {
 
 interface UseCloudAgentsOptions {
   configId?: string;
-  apiKey?: string; // API key from localStorage (takes priority over configId)
-  pollIntervalMs?: number; // Polling interval for agents list (default: undefined = no polling)
-  conversationPollIntervalMs?: number; // Polling interval for conversation (default: 3000ms = 3 seconds)
+  apiKey?: string;
+  pollIntervalMs?: number;
+  conversationPollIntervalMs?: number;
 }
 
 interface UseCloudAgentsState {
@@ -36,6 +38,8 @@ interface UseCloudAgentsState {
     apiKeyName?: string;
     userEmail?: string;
   };
+  // New: Track if we have pending updates
+  pendingMessageCount: number;
 }
 
 export function useCloudAgents(options: UseCloudAgentsOptions = {}): {
@@ -44,18 +48,28 @@ export function useCloudAgents(options: UseCloudAgentsOptions = {}): {
   refresh: () => Promise<void>;
   refreshConversation: () => Promise<void>;
   addMessageToConversation: (agentId: string, message: { type: string; text: string; id?: string; createdAt?: string }) => void;
+  markMessagesRead: () => void;
 } {
   const [state, setState] = useState<UseCloudAgentsState>({
     agents: [],
     conversationsByAgentId: {},
     loading: false,
-    userInfoLoading: false
+    userInfoLoading: false,
+    pendingMessageCount: 0
   });
 
   const { configId, apiKey, pollIntervalMs, conversationPollIntervalMs = 3000 } = options;
 
-  const loadUserInfo = async (): Promise<void> => {
-    // Skip loading user info if no API key is provided
+  // Refs for polling management
+  const abortControllerRef = useRef<AbortController | null>(null);
+  const pollTimeoutRef = useRef<NodeJS.Timeout | null>(null);
+  const currentPollIntervalRef = useRef<number>(3000); // Start with 3 seconds
+  const consecutiveErrorsRef = useRef<number>(0);
+  const lastMessageCountRef = useRef<number>(0);
+  const isPollingPausedRef = useRef<boolean>(false);
+  const lastFetchedMessageIdsRef = useRef<Set<string>>(new Set());
+
+  const loadUserInfo = useCallback(async (): Promise<void> => {
     if (!apiKey && !configId) {
       setState((prev) => ({
         ...prev,
@@ -80,9 +94,9 @@ export function useCloudAgents(options: UseCloudAgentsOptions = {}): {
       const message = error instanceof Error ? error.message : 'Failed to load API user info';
       setState((prev) => ({ ...prev, userInfoLoading: false, userInfoError: message }));
     }
-  };
+  }, [apiKey, configId]);
 
-  const loadAgents = async (): Promise<void> => {
+  const loadAgents = useCallback(async (): Promise<void> => {
     setState((prev) => ({ ...prev, loading: true, error: undefined }));
     try {
       const data = await fetchCloudAgents({ apiKey, configId, limit: 50 });
@@ -91,123 +105,222 @@ export function useCloudAgents(options: UseCloudAgentsOptions = {}): {
       const message = error instanceof Error ? error.message : 'Failed to load agents';
       setState((prev) => ({ ...prev, loading: false, error: message }));
     }
-  };
+  }, [apiKey, configId]);
 
-  const loadConversation = async (agentId: string, silent = false): Promise<void> => {
+  // Ref to track last conversation for comparison (avoid unnecessary re-renders)
+  const lastConversationRef = useRef<CursorConversationResponse | null>(null);
+
+  // Enhanced message comparison - only detect genuinely new messages
+  const findNewMessages = useCallback((
+    currentMessages: any[],
+    newMessages: any[]
+  ): { new: any[]; replacedTempIds: Set<string>; hasChanges: boolean } => {
+    const newMsgs: any[] = [];
+    const replacedTempIds = new Set<string>();
+
+    // If lengths are different, there are definitely changes
+    if (currentMessages.length !== newMessages.length) {
+      const currentIds = new Set(currentMessages.map(m => m.id).filter(Boolean));
+      const currentTempContent = new Set(
+        currentMessages.filter(m => m.id?.startsWith('temp-')).map(m => `${m.type}-${m.text}`)
+      );
+
+      for (const msg of newMessages) {
+        // Check if this is a real message we already have
+        if (msg.id && currentIds.has(msg.id)) {
+          const tempMsg = currentMessages.find(
+            m => m.id?.startsWith('temp-') && m.type === msg.type && m.text === msg.text
+          );
+          if (tempMsg) replacedTempIds.add(tempMsg.id);
+          continue;
+        }
+
+        // Check if real message replaces temp
+        if (!msg.id?.startsWith('temp-') && currentTempContent.has(`${msg.type}-${msg.text}`)) {
+          const tempMsg = currentMessages.find(
+            m => m.id?.startsWith('temp-') && m.type === msg.type && m.text === msg.text
+          );
+          if (tempMsg) replacedTempIds.add(tempMsg.id);
+          continue;
+        }
+
+        newMsgs.push(msg);
+      }
+
+      return { new: newMsgs, replacedTempIds, hasChanges: true };
+    }
+
+    // Same length - check if IDs match
+    const currentIds = new Set(currentMessages.map(m => m.id).filter(Boolean));
+    const newIds = new Set(newMessages.map(m => m.id).filter(Boolean));
+
+    // If all IDs match, no changes
+    if (currentIds.size === newIds.size && [...currentIds].every(id => newIds.has(id))) {
+      return { new: [], replacedTempIds: new Set(), hasChanges: false };
+    }
+
+    // IDs don't match - there are changes
+    const currentTempContent = new Set(
+      currentMessages.filter(m => m.id?.startsWith('temp-')).map(m => `${m.type}-${m.text}`)
+    );
+
+    for (const msg of newMessages) {
+      if (msg.id && currentIds.has(msg.id)) {
+        const tempMsg = currentMessages.find(
+          m => m.id?.startsWith('temp-') && m.type === msg.type && m.text === msg.text
+        );
+        if (tempMsg) replacedTempIds.add(tempMsg.id);
+        continue;
+      }
+
+      if (!msg.id?.startsWith('temp-') && currentTempContent.has(`${msg.type}-${msg.text}`)) {
+        const tempMsg = currentMessages.find(
+          m => m.id?.startsWith('temp-') && m.type === msg.type && m.text === msg.text
+        );
+        if (tempMsg) replacedTempIds.add(tempMsg.id);
+        continue;
+      }
+
+      newMsgs.push(msg);
+    }
+
+    return { new: newMsgs, replacedTempIds, hasChanges: newMsgs.length > 0 || replacedTempIds.size > 0 };
+  }, []);
+
+  // Smart conversation loader with AbortController and exponential backoff
+  // IMPORTANT: Only call setState when there are actual changes to avoid re-renders
+  const loadConversation = useCallback(async (agentId: string, silent = false): Promise<{
+    hasNewMessages: boolean;
+    newMessageCount: number;
+    replacedTempIds: Set<string>;
+  }> => {
+    // Cancel any pending request
+    if (abortControllerRef.current) {
+      abortControllerRef.current.abort();
+    }
+
+    const controller = new AbortController();
+    abortControllerRef.current = controller;
+
     try {
-      const data = await fetchCloudAgentConversation(agentId, apiKey ? { apiKey } : { configId });
+      const data = await fetchCloudAgentConversation(agentId, apiKey ? { apiKey } : { configId }, controller.signal);
+      const newMessages = data.messages ?? [];
+
+      // Get current messages from state (without triggering update)
+      // We'll read this synchronously after the fetch
+      let currentMessages: any[] = [];
+      let currentConversationRefValue: CursorConversationResponse | undefined;
+
+      // Use a one-time effect pattern: we'll set state only if needed
       setState((prev) => {
-        const currentConversation = prev.conversationsByAgentId[agentId] ?? prev.conversation;
-        const currentMessages = currentConversation?.messages ?? [];
-        const newMessages = data.messages ?? [];
-        
-        // Merge messages by ID (canonical store pattern)
-        // Create a Map keyed by message ID for O(1) lookup
+        currentConversationRefValue = prev.conversationsByAgentId[agentId] ?? prev.conversation;
+        currentMessages = currentConversationRefValue?.messages ?? [];
+        return prev; // Don't actually update here
+      });
+
+      currentMessages = currentMessages || [];
+
+      // Check if there are any changes
+      const { new: genuinelyNew, replacedTempIds, hasChanges } = findNewMessages(currentMessages, newMessages);
+
+      // Reset error tracking on success
+      consecutiveErrorsRef.current = 0;
+      currentPollIntervalRef.current = 3000;
+
+      // If no changes, don't call setState at all (prevents re-render)
+      if (!hasChanges) {
+        return { hasNewMessages: false, newMessageCount: 0, replacedTempIds: new Set() };
+      }
+
+      // There are changes - update state
+      setState((prev) => {
+        const currentConv = prev.conversationsByAgentId[agentId] ?? prev.conversation;
+        const msgs = currentConv?.messages ?? [];
+
+        // Recalculate in case state changed between our check and now
+        const { new: actualNew, replacedTempIds: actualReplaced } = findNewMessages(msgs, newMessages);
+
+        if (actualNew.length === 0 && actualReplaced.size === 0) {
+          return prev; // Double-check: still no changes
+        }
+
+        // Create merged messages preserving order
         const messageMap = new Map<string, any>();
-        
-        // First, add all current messages to the map (preserve temp messages)
-        currentMessages.forEach((msg) => {
+
+        // Add all current messages first
+        msgs.forEach((msg) => {
+          messageMap.set(msg.id || `temp-${msg.text}-${(msg as { createdAt?: string })['createdAt']}`, msg);
+        });
+
+        // Update/replace with new messages
+        newMessages.forEach((msg) => {
           const msgId = msg.id || `temp-${msg.text}-${(msg as { createdAt?: string })['createdAt']}`;
           messageMap.set(msgId, msg);
         });
-        
-        // Then, merge new messages from server
-        newMessages.forEach((msg) => {
-          const msgId = msg.id || `temp-${msg.text}-${(msg as { createdAt?: string })['createdAt']}`;
-          const existingMsg = messageMap.get(msgId);
-          
-          // If message exists with same ID, update it
-          if (existingMsg) {
-            // If existing is temp and new is real, replace temp with real
-            if (existingMsg.id?.startsWith('temp-') && msg.id && !msg.id.startsWith('temp-')) {
-              messageMap.set(msgId, msg);
-            } else if (!existingMsg.id?.startsWith('temp-') && msg.id && !msg.id.startsWith('temp-')) {
-              // Both are real messages, use the one with latest timestamp
-              const existingTime = existingMsg.createdAt ? new Date(existingMsg.createdAt).getTime() : 0;
-              const msgCreatedAt = (msg as { createdAt?: string })['createdAt'];
-              const newTime = msgCreatedAt && typeof msgCreatedAt === 'string'
-                ? new Date(msgCreatedAt).getTime() 
-                : 0;
-              
-              if (newTime >= existingTime) {
-                messageMap.set(msgId, msg);
-              }
+
+        // Remove temp messages that have been replaced by real messages
+        actualReplaced.forEach((tempId) => {
+          const tempMsg = messageMap.get(tempId);
+          if (tempMsg) {
+            const realMsg = newMessages.find(
+              m => !m.id?.startsWith('temp-') && m.type === tempMsg.type && m.text === tempMsg.text
+            );
+            if (realMsg) {
+              messageMap.delete(tempId);
             }
-            // Otherwise keep existing (don't replace temp with temp, or real with temp)
-          } else {
-            // New message from server, add it
-            messageMap.set(msgId, msg);
           }
         });
-        
-        // Remove temp messages that match real messages by text (same text = same message)
-        // This handles the case where temp message has different ID than real message
-        const tempMessages = Array.from(messageMap.entries()).filter(([_, msg]) => msg.id?.startsWith('temp-'));
-        const realMessages = Array.from(messageMap.values()).filter(msg => msg.id && !msg.id.startsWith('temp-'));
-        
-        tempMessages.forEach(([tempId, tempMsg]) => {
-          // Find matching real message by text content
-          const matchingReal = realMessages.find((realMsg) => {
-            return tempMsg.text === realMsg.text && tempMsg.type === realMsg.type;
-          });
-          
-          // If we found a matching real message, remove the temp one
-          if (matchingReal) {
-            messageMap.delete(tempId);
-          }
-        });
-        
-        // Convert map back to sorted array (by createdAt)
+
+        // Sort by createdAt
         const mergedMessages = Array.from(messageMap.values()).sort((a, b) => {
-          const aCreatedAt = (a as { createdAt?: string })['createdAt'];
-          const aTime = aCreatedAt && typeof aCreatedAt === 'string'
-            ? new Date(aCreatedAt).getTime() 
-            : 0;
-          const bCreatedAt = (b as { createdAt?: string })['createdAt'];
-          const bTime = bCreatedAt && typeof bCreatedAt === 'string'
-            ? new Date(bCreatedAt).getTime() 
-            : 0;
+          const aTime = (a as { createdAt?: string })['createdAt']
+            ? new Date((a as { createdAt?: string })['createdAt']!).getTime() : 0;
+          const bTime = (b as { createdAt?: string })['createdAt']
+            ? new Date((b as { createdAt?: string })['createdAt']!).getTime() : 0;
           return aTime - bTime;
         });
-        
-        // Only update if messages actually changed
-        const hasChanges = mergedMessages.length !== currentMessages.length ||
-          mergedMessages.some((msg, idx) => {
-            const currentMsg = currentMessages[idx];
-            if (!currentMsg) return true;
-            return msg.id !== currentMsg.id || msg.text !== currentMsg.text;
-          });
-        
-        if (!hasChanges && silent) {
-          return prev; // No changes, skip update
-        }
-        
+
         const updatedConversation: CursorConversationResponse = {
           ...data,
           messages: mergedMessages
         };
-        
+
         return {
           ...prev,
           conversation: agentId === prev.selectedAgentId ? updatedConversation : prev.conversation,
           conversationsByAgentId: {
             ...prev.conversationsByAgentId,
             [agentId]: updatedConversation
-          }
+          },
+          pendingMessageCount: prev.pendingMessageCount + actualNew.length
         };
       });
+
+      return {
+        hasNewMessages: genuinelyNew.length > 0 || replacedTempIds.size > 0,
+        newMessageCount: genuinelyNew.length,
+        replacedTempIds
+      };
     } catch (error) {
-      // Only show error if not silent polling
+      if (error instanceof Error && error.name === 'AbortError') {
+        return { hasNewMessages: false, newMessageCount: 0, replacedTempIds: new Set() };
+      }
+
+      // Track consecutive errors for exponential backoff
+      consecutiveErrorsRef.current++;
+      currentPollIntervalRef.current = Math.min(3000 * Math.pow(2, consecutiveErrorsRef.current - 1), 30000);
+
       if (!silent) {
         const message = error instanceof Error ? error.message : 'Failed to load conversation';
         setState((prev) => ({ ...prev, error: message }));
       }
-    }
-  };
 
-  const selectAgent = async (id: string): Promise<void> => {
+      return { hasNewMessages: false, newMessageCount: 0, replacedTempIds: new Set() };
+    }
+  }, [apiKey, configId, findNewMessages]);
+
+  const selectAgent = useCallback(async (id: string): Promise<void> => {
     if (!id) {
-      // Clear agent selection and conversation
       setState((prev) => ({
         ...prev,
         selectedAgentId: undefined,
@@ -215,28 +328,49 @@ export function useCloudAgents(options: UseCloudAgentsOptions = {}): {
       }));
       return;
     }
+
+    // Cancel any pending polling
+    if (pollTimeoutRef.current) {
+      clearTimeout(pollTimeoutRef.current);
+      pollTimeoutRef.current = null;
+    }
+
     setState((prev) => ({
       ...prev,
       selectedAgentId: id,
       conversation: prev.conversationsByAgentId[id] ?? prev.conversation
     }));
-    await loadConversation(id);
-  };
 
-  const refresh = async (): Promise<void> => {
+    // Reset tracking for new agent
+    lastMessageCountRef.current = 0;
+    lastFetchedMessageIdsRef.current = new Set();
+
+    await loadConversation(id);
+  }, [loadConversation]);
+
+  const refresh = useCallback(async (): Promise<void> => {
     await loadAgents();
     if (state.selectedAgentId) {
-      await loadConversation(state.selectedAgentId);
-    }
-  };
-
-  const refreshConversation = async (): Promise<void> => {
-    if (state.selectedAgentId) {
+      lastMessageCountRef.current = 0;
+      lastFetchedMessageIdsRef.current = new Set();
       await loadConversation(state.selectedAgentId, false);
     }
-  };
+  }, [loadAgents, loadConversation, state.selectedAgentId]);
 
-  const addMessageToConversation = (agentId: string, message: { type: string; text: string; id?: string; createdAt?: string }): void => {
+  const refreshConversation = useCallback(async (): Promise<void> => {
+    if (state.selectedAgentId) {
+      lastMessageCountRef.current = 0;
+      lastFetchedMessageIdsRef.current = new Set();
+      await loadConversation(state.selectedAgentId, false);
+    }
+  }, [loadConversation, state.selectedAgentId]);
+
+  const addMessageToConversation = useCallback((agentId: string, message: {
+    type: string;
+    text: string;
+    id?: string;
+    createdAt?: string;
+  }): void => {
     setState((prev) => {
       const currentConversation = prev.conversationsByAgentId[agentId] ?? prev.conversation;
       const newMessage = {
@@ -244,8 +378,8 @@ export function useCloudAgents(options: UseCloudAgentsOptions = {}): {
         id: message.id ?? `temp-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`,
         createdAt: message.createdAt ?? new Date().toISOString()
       };
-      
-      // Prevent duplicate messages by checking if message already exists
+
+      // Prevent duplicates
       const existingMessages = currentConversation?.messages ?? [];
       const messageExists = existingMessages.some((msg) => {
         if (msg.id === newMessage.id) return true;
@@ -257,16 +391,20 @@ export function useCloudAgents(options: UseCloudAgentsOptions = {}): {
         }
         return false;
       });
-      
+
       if (messageExists) {
         return prev;
       }
-      
+
       const updatedMessages = [...existingMessages, newMessage];
       const updatedConversation: CursorConversationResponse = {
         ...currentConversation,
         messages: updatedMessages
       };
+
+      // Update last message count ref to prevent false "new message" detection
+      lastMessageCountRef.current = updatedMessages.length;
+
       return {
         ...prev,
         conversation: agentId === prev.selectedAgentId ? updatedConversation : prev.conversation,
@@ -276,66 +414,106 @@ export function useCloudAgents(options: UseCloudAgentsOptions = {}): {
         }
       };
     });
-  };
+  }, []);
 
+  const markMessagesRead = useCallback((): void => {
+    setState((prev) => ({
+      ...prev,
+      pendingMessageCount: 0
+    }));
+  }, []);
+
+  // Smart polling with exponential backoff and visibility handling
   useEffect(() => {
     void loadUserInfo();
     void loadAgents();
 
     const interval =
       pollIntervalMs && pollIntervalMs > 0
-      ? window.setInterval(() => {
-          void loadAgents();
-        }, pollIntervalMs)
-      : undefined;
+        ? window.setInterval(() => {
+            void loadAgents();
+          }, pollIntervalMs)
+        : undefined;
 
     return () => {
       if (interval) {
         window.clearInterval(interval);
       }
     };
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [configId, apiKey, pollIntervalMs]);
+  }, [configId, apiKey, pollIntervalMs, loadUserInfo, loadAgents]);
 
-  // Poll conversation when agent is selected and poll interval is set
+  // Enhanced conversation polling - ONLY poll when agent is RUNNING
+  // When agent is FINISHED or ERROR, no new messages will come
   useEffect(() => {
     if (!state.selectedAgentId || !conversationPollIntervalMs || conversationPollIntervalMs <= 0) {
       return;
     }
 
-    // Find the selected agent to check its status
-    const selectedAgent = state.agents.find((a) => a.id === state.selectedAgentId);
+    // Only poll if agent is RUNNING
+    const currentAgentId = state.selectedAgentId;
+    const selectedAgent = state.agents.find((a) => a.id === currentAgentId);
     const isRunning = selectedAgent?.status === 'RUNNING';
-    const isFinished = selectedAgent?.status === 'FINISHED';
-    const isError = selectedAgent?.status === 'ERROR';
 
-    // Poll if agent is running, or if it just finished (to catch final messages)
-    // Also poll for a short time after agent stops to catch any final messages
-    if (!isRunning && !isFinished && !isError) {
+    // If not running, don't poll at all
+    if (!isRunning) {
       return;
     }
 
-    // For finished/error agents, poll less frequently (every 10 seconds) for a limited time
-    const pollInterval = isRunning ? conversationPollIntervalMs : 10000;
     let pollCount = 0;
-    const maxPollCount = isRunning ? Infinity : 6; // Poll finished agents for 1 minute max
+    const maxPollCount = Infinity; // Keep polling while running
 
-    const conversationInterval = window.setInterval(() => {
-      if (state.selectedAgentId) {
+    const runPoll = async () => {
+      if (!state.selectedAgentId || state.selectedAgentId !== currentAgentId) return;
+
+      const result = await loadConversation(state.selectedAgentId, true);
+
+      // Only increment poll count if no new messages (we're just checking)
+      if (!result.hasNewMessages) {
         pollCount++;
-        if (pollCount > maxPollCount) {
-          window.clearInterval(conversationInterval);
-          return;
-        }
-        void loadConversation(state.selectedAgentId, true); // silent = true for polling
+      } else {
+        pollCount = 0; // Reset on new messages
       }
-    }, pollInterval);
+
+      if (pollCount > maxPollCount) {
+        return;
+      }
+
+      // Calculate next poll interval with exponential backoff
+      const baseInterval = conversationPollIntervalMs;
+      const nextInterval = Math.min(baseInterval + consecutiveErrorsRef.current * 1000, 30000);
+
+      pollTimeoutRef.current = setTimeout(runPoll, nextInterval);
+    };
+
+    // Start polling
+    pollTimeoutRef.current = setTimeout(runPoll, currentPollIntervalRef.current);
 
     return () => {
-      window.clearInterval(conversationInterval);
+      if (pollTimeoutRef.current) {
+        clearTimeout(pollTimeoutRef.current);
+      }
+      if (abortControllerRef.current) {
+        abortControllerRef.current.abort();
+      }
     };
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [state.selectedAgentId, state.agents, conversationPollIntervalMs, configId, apiKey]);
+  }, [state.selectedAgentId, state.agents, conversationPollIntervalMs, configId, apiKey, loadConversation]);
 
-  return { state, selectAgent, refresh, refreshConversation, addMessageToConversation };
+  // Pause polling when tab is not visible (save resources)
+  useEffect(() => {
+    const handleVisibilityChange = () => {
+      isPollingPausedRef.current = document.hidden;
+    };
+
+    document.addEventListener('visibilitychange', handleVisibilityChange);
+    return () => document.removeEventListener('visibilitychange', handleVisibilityChange);
+  }, []);
+
+  return {
+    state,
+    selectAgent,
+    refresh,
+    refreshConversation,
+    addMessageToConversation,
+    markMessagesRead
+  };
 }

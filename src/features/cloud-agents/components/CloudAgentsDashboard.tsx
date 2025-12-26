@@ -8,7 +8,7 @@
 'use client';
 
 import type { FC } from 'react';
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useRef, useState, useCallback } from 'react';
 
 import { useCloudAgents } from '@/features/cloud-agents/hooks/use-cloud-agents.hook';
 import { EmptyState } from '@/shared/components/EmptyState';
@@ -183,26 +183,23 @@ export const CloudAgentsDashboard: FC<CloudAgentsDashboardProps> = ({ initialCon
     });
 
     // Scroll to bottom immediately to show new message
-    requestAnimationFrame(() => {
-      conversationEndRef.current?.scrollIntoView({ behavior: 'smooth', block: 'end' });
-    });
+    // Only scroll if user is not reading history
+    if (!isUserScrolledUpRef.current && conversationEndRef.current) {
+      requestAnimationFrame(() => {
+        conversationEndRef.current?.scrollIntoView({ behavior: 'smooth', block: 'end' });
+      });
+    }
 
     try {
       // Send follow-up request
       await followup(state.selectedAgentId, promptText);
 
-      // Refresh conversation to get actual messages from server
-      // The refresh will merge correctly because we're replacing the entire conversation
-      await refresh();
-
-      // Scroll again after refresh to ensure we're at the bottom
-      requestAnimationFrame(() => {
-        conversationEndRef.current?.scrollIntoView({ behavior: 'smooth', block: 'end' });
-      });
+      // Don't call full refresh() - let polling pick up the changes
+      // This prevents the flickering issue
     } catch (error) {
-      // On error, remove the optimistic message and refresh to get correct state
-      // We'll let refresh handle the state correction
-      await refresh();
+      // On error, the polling will eventually sync the correct state
+      // For now, just log the error (user sees their message is still there)
+      console.error('Follow-up error:', error);
     }
   };
 
@@ -334,39 +331,115 @@ export const CloudAgentsDashboard: FC<CloudAgentsDashboardProps> = ({ initialCon
   const errorAgents = agentsWithConfig.filter((agent) => agent.status === 'ERROR').length;
 
   const conversationEndRef = useRef<HTMLDivElement | null>(null);
+  const conversationContainerRef = useRef<HTMLDivElement | null>(null);
   const previousMessageCountRef = useRef<number>(0);
+  const previousMessageIdsRef = useRef<Set<string>>(new Set());
+  const isUserScrolledUpRef = useRef<boolean>(false);
+  const lastAutoScrollTimeRef = useRef<number>(0);
+  const [showNewMessagesButton, setShowNewMessagesButton] = useState(false);
 
-  // Auto-scroll when new messages arrive (including from polling)
-  // Only scroll if agent is selected (not when closed)
+  // Track if user has scrolled up (don't auto-scroll in this case)
+  const checkScrollPosition = useCallback(() => {
+    if (!conversationContainerRef.current) return;
+
+    const { scrollTop, scrollHeight, clientHeight } = conversationContainerRef.current;
+    const scrollThreshold = 50; // pixels from bottom
+    const isAtBottom = scrollHeight - scrollTop - clientHeight <= scrollThreshold;
+
+    isUserScrolledUpRef.current = !isAtBottom;
+    setShowNewMessagesButton(!isAtBottom && (state.pendingMessageCount > 0));
+  }, [state.pendingMessageCount]);
+
+  // Auto-scroll when new messages arrive (MiniMax-style behavior)
   useEffect(() => {
-    // Don't scroll if no agent is selected
     if (!state.selectedAgentId) {
       previousMessageCountRef.current = 0;
+      previousMessageIdsRef.current = new Set();
       return;
     }
 
-    const currentMessageCount = state.conversation?.messages?.length ?? 0;
-    const previousMessageCount = previousMessageCountRef.current;
-    
-    // Only scroll if new messages were added (not on initial load or when count decreases)
-    if (currentMessageCount > previousMessageCount && conversationEndRef.current) {
-      // Small delay to ensure DOM is updated
+    const messages = state.conversation?.messages ?? [];
+    const currentMessageCount = messages.length;
+
+    // Get current message IDs (filter out undefined/null)
+    const currentMessageIds = new Set<string>(messages.map(m => m.id).filter((id): id is string => Boolean(id)));
+
+    // Check if there are genuinely new messages
+    const previousIds = previousMessageIdsRef.current;
+    const newMessageIds = [...currentMessageIds].filter(id => !previousIds.has(id));
+
+    const hasNewMessages = newMessageIds.length > 0;
+
+    // Only scroll if:
+    // 1. There are genuinely new messages
+    // 2. User is not scrolled up (reading history)
+    // 3. Not during rapid message sending (debounce)
+    const now = Date.now();
+    const shouldAutoScroll = hasNewMessages &&
+      !isUserScrolledUpRef.current &&
+      (now - lastAutoScrollTimeRef.current > 500); // Debounce 500ms
+
+    if (shouldAutoScroll && conversationEndRef.current) {
+      lastAutoScrollTimeRef.current = now;
+
+      // Use smooth scroll for new messages
       requestAnimationFrame(() => {
-        conversationEndRef.current?.scrollIntoView({ behavior: 'smooth', block: 'end' });
+        conversationEndRef.current?.scrollIntoView({
+          behavior: 'smooth',
+          block: 'end'
+        });
       });
     }
-    
+
+    // Update refs for next comparison
     previousMessageCountRef.current = currentMessageCount;
-  }, [state.conversation?.messages?.length, state.selectedAgentId]);
+    previousMessageIdsRef.current = currentMessageIds;
+  }, [state.selectedAgentId, state.conversation?.messages, state.pendingMessageCount]);
 
   // Scroll on agent selection change (only when selecting, not when deselecting)
+  // IMPORTANT: Open directly at bottom without going to top first
   useEffect(() => {
     if (state.selectedAgentId && conversationEndRef.current) {
-      requestAnimationFrame(() => {
-        conversationEndRef.current?.scrollIntoView({ behavior: 'smooth', block: 'end' });
-      });
+      // Reset scroll tracking on new agent selection
+      isUserScrolledUpRef.current = false;
+      setShowNewMessagesButton(false);
+      previousMessageIdsRef.current = new Set();
+      lastAutoScrollTimeRef.current = 0;
+
+      // Open directly at bottom without animating from top
+      // This prevents the "jump to top then scroll down" effect
+      setTimeout(() => {
+        if (conversationEndRef.current) {
+          conversationEndRef.current.scrollIntoView({ behavior: 'auto', block: 'end' });
+        }
+      }, 0);
     }
   }, [state.selectedAgentId]);
+
+  // Handle scroll events to detect if user scrolled up
+  useEffect(() => {
+    const container = conversationContainerRef.current;
+    if (!container) return;
+
+    const handleScroll = () => {
+      checkScrollPosition();
+    };
+
+    container.addEventListener('scroll', handleScroll, { passive: true });
+    return () => container.removeEventListener('scroll', handleScroll);
+  }, [checkScrollPosition]);
+
+  // Scroll to bottom when user clicks "new messages" button
+  const scrollToBottom = useCallback(() => {
+    if (conversationEndRef.current) {
+      isUserScrolledUpRef.current = false;
+      setShowNewMessagesButton(false);
+      conversationEndRef.current.scrollIntoView({
+        behavior: 'smooth',
+        block: 'end'
+      });
+    }
+  }, []);
 
   // Debounce search query
   useEffect(() => {
@@ -1130,7 +1203,20 @@ export const CloudAgentsDashboard: FC<CloudAgentsDashboardProps> = ({ initialCon
               </button>
             </div>
           </div>
-          <div className="flex-1 overflow-y-auto p-3 sm:p-4 space-y-3">
+          {/* New Messages Button - appears when user scrolls up and new messages arrive */}
+          {showNewMessagesButton && state.pendingMessageCount > 0 && (
+            <button
+              type="button"
+              onClick={scrollToBottom}
+              className="absolute bottom-4 left-1/2 -translate-x-1/2 z-20 bg-primary text-primary-foreground px-4 py-2 rounded-full shadow-lg text-sm font-medium animate-fadeInUp flex items-center gap-2 hover:bg-primary-hover transition-colors"
+            >
+              <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 14l-7 7m0 0l-7-7m7 7V3" />
+              </svg>
+              {state.pendingMessageCount} new message{state.pendingMessageCount > 1 ? 's' : ''}
+            </button>
+          )}
+          <div ref={conversationContainerRef} className="flex-1 overflow-y-auto p-3 sm:p-4 space-y-3 scroll-smooth">
             {!state.selectedAgentId && (
               <EmptyState
                 icon={
