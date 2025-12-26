@@ -1,0 +1,652 @@
+{
+  "project": {
+    "name": "Autonomous Cursor Orchestrator - Server Edition",
+    "version": "1.0.0",
+    "description": "نظام ذكي مستقل لإدارة Cursor Cloud Agents - معدل للعمل على السيرفر مع Supabase و Next.js",
+    "purpose": "تحويل Cloud Agents من نظام يتوقف بعد كل خطوة إلى نظام يعمل بشكل مستقل حتى إنجاز المهمة كاملة - على سيرفر لينكس مع Supabase محلي"
+  },
+  "architecture": {
+    "overview": "النظام يعمل كجزء من Next.js application على السيرفر، يستقبل webhooks من Cursor Cloud Agents، يحلل التقدم باستخدام AI، يقرر الخطوة التالية (CONTINUE/TEST/COMPLETE)، ويرسل follow-ups تلقائياً",
+    "deployment": {
+      "server": "Linux VPS (فيزيائي أو سحابي)",
+      "database": "Supabase (self-hosted على نفس السيرفر)",
+      "framework": "Next.js (standalone mode)",
+      "process_manager": "PM2",
+      "queue": "Redis (للـ background jobs)",
+      "reverse_proxy": "Nginx",
+      "tunnel": "Cloudflare Tunnel (بدلاً من ngrok)"
+    },
+    "components": [
+      {
+        "name": "Vercel Webhook Route",
+        "file": "app/api/cloud-agents/webhook/route.ts (في المشروع الحالي)",
+        "role": "استقبال webhooks من Cursor وإضافة jobs للـ Redis queue",
+        "location": "Vercel (cursor-monitor)",
+        "responsibilities": [
+          "استقبال webhook من Cursor",
+          "التحقق من signature",
+          "الرد السريع (200 OK)",
+          "إضافة job للـ Redis queue (لا معالجة مباشرة)",
+          "لا تعديلات على باقي المشروع"
+        ],
+        "modifications": "تعديل بسيط فقط - إضافة Redis connection + queue.add()"
+      },
+      {
+        "name": "Orchestrator Service",
+        "file": "src/services/orchestrator.service.ts (في المشروع المنفصل)",
+        "role": "الخدمة الرئيسية - تستدعى من Background Worker",
+        "location": "Local Server (cursor-monitor-orchestrator - مشروع منفصل)",
+        "responsibilities": [
+          "معالجة webhook events من Redis queue",
+          "إدارة حالة كل Agent في Supabase",
+          "استدعاء Analyzer لتحليل التقدم",
+          "استدعاء Tester لاختبار الكود",
+          "إرسال follow-ups للـ Cloud Agents",
+          "إرسال notifications عند الأحداث المهمة"
+        ]
+      },
+      {
+        "name": "State Manager",
+        "file": "src/services/state-manager.service.ts (في المشروع المنفصل)",
+        "role": "إدارة حالات Agents في Supabase database",
+        "location": "Local Server (مشروع منفصل)",
+        "responsibilities": [
+          "حفظ وتحديث حالة كل Agent (iterations, tasks, status)",
+          "كل Agent له state منفصل تماماً (لا تداخل)",
+          "تتبع عدد التكرارات لمنع loops لا نهائية",
+          "حفظ آخر تحليل لكل Agent"
+        ],
+        "database_schema": {
+          "table": "agent_orchestrator_states",
+          "columns": [
+            "id UUID PRIMARY KEY DEFAULT gen_random_uuid()",
+            "agent_id TEXT NOT NULL UNIQUE - معرّف فريد من Cursor",
+            "task_description TEXT - وصف المهمة الأصلية",
+            "branch_name TEXT - اسم الـ branch الذي ينشئه Agent",
+            "repository TEXT - رابط GitHub repository",
+            "iterations INTEGER DEFAULT 0 - عدد المرات التي تكرر فيها التحليل",
+            "status TEXT DEFAULT 'ACTIVE' - ACTIVE/COMPLETED/ERROR/TIMEOUT",
+            "tasks_completed JSONB DEFAULT '[]' - JSON array للمهام المنجزة",
+            "tasks_remaining JSONB DEFAULT '[]' - JSON array للمهام المتبقية",
+            "last_analysis JSONB - JSON للتحليل الأخير",
+            "created_at TIMESTAMP DEFAULT NOW() - وقت الإنشاء",
+            "updated_at TIMESTAMP DEFAULT NOW() - آخر تحديث"
+          ],
+          "indexes": [
+            "CREATE INDEX idx_agent_orchestrator_agent_id ON agent_orchestrator_states(agent_id)",
+            "CREATE INDEX idx_agent_orchestrator_status ON agent_orchestrator_states(status)"
+          ]
+        }
+      },
+      {
+        "name": "Analyzer",
+        "file": "src/features/cloud-agents/orchestrator/services/analyzer.service.ts",
+        "role": "التحليل الذكي باستخدام Cursor API - قلب النظام",
+        "how_it_works": {
+          "step1": "يجلب المحادثة الكاملة من Cloud Agent عبر API",
+          "step2": "يجلب حالة Agent (branch, summary, PR url)",
+          "step3": "يبني prompt مفصل للتحليل يحتوي على: المحادثة، المهام المنجزة، المهام المتبقية",
+          "step4": "يستدعي Cursor API للتحليل (استخدام infrastructure/cursor-cloud-agents/client.ts الموجود)",
+          "step5": "يستقبل قرار بصيغة JSON: {action, reasoning, followupMessage, confidence}"
+        },
+        "decisions": [
+          {
+            "action": "CONTINUE",
+            "when": "المهمة لم تكتمل بعد",
+            "result": "يرسل follow-up message للـ Cloud Agent للاستمرار"
+          },
+          {
+            "action": "TEST",
+            "when": "المهمة اكتملت ظاهرياً",
+            "result": "يستدعي Tester لفحص الكود محلياً"
+          },
+          {
+            "action": "FIX",
+            "when": "هناك أخطاء واضحة",
+            "result": "يرسل تعليمات إصلاح محددة"
+          },
+          {
+            "action": "COMPLETE",
+            "when": "كل شيء جاهز ومختبر",
+            "result": "ينهي العملية ويرسل إشعار نجاح"
+          }
+        ]
+      },
+      {
+        "name": "Tester",
+        "file": "src/services/tester.service.ts (في المشروع المنفصل)",
+        "role": "اختبار الكود محلياً في بيئة منعزلة",
+        "location": "Local Server (مشروع منفصل)",
+        "how_it_works": {
+          "step1": "يحفظ البرانش الحالي (مثل main)",
+          "step2": "يعمل git checkout للـ branch الجديد (cursor/feature-123)",
+          "step3": "يشغل: npm install → npm test → npm run lint → npm run build",
+          "step4": "إذا نجح: يعود لـ main ويُرجع success",
+          "step5": "إذا فشل: يحلل الأخطاء ويولد تعليمات إصلاح",
+          "step6": "في كل الحالات: يعود للبرانش الأصلي (لا تأثير على main)"
+        },
+        "important_note": "لا يعمل merge أبداً - فقط checkout مؤقت للاختبار",
+        "server_side": "يعمل على السيرفر - يحتاج PROJECT_PATH في environment variables"
+      },
+      {
+        "name": "Notifier",
+        "file": "src/features/cloud-agents/orchestrator/services/notifier.service.ts",
+        "role": "إرسال إشعارات عبر قنوات متعددة",
+        "channels": ["Slack", "Email", "Discord"],
+        "events": [
+          "progress - تحديثات دورية (كل 3 iterations)",
+          "success - عند إكمال المهمة",
+          "error - عند حدوث خطأ",
+          "timeout - عند تجاوز الحد الأقصى"
+        ]
+      },
+      {
+        "name": "Background Worker",
+        "file": "src/workers/orchestrator-worker.ts (في المشروع المنفصل)",
+        "role": "معالجة webhook events من Redis queue",
+        "location": "Local Server (مشروع منفصل)",
+        "how_it_works": {
+          "step1": "يستمع لـ Redis queue (نفس الـ queue الذي يضيفه Vercel)",
+          "step2": "يعالج webhook events بشكل async",
+          "step3": "يستدعي Orchestrator Service",
+          "step4": "يضيف retry logic تلقائياً"
+        },
+        "deployment": "يعمل كـ PM2 process منفصل على Local Server",
+        "communication": "يتواصل مع Vercel عبر Redis Queue فقط - لا HTTP calls"
+      },
+      {
+        "name": "Cron Jobs",
+        "file": "scripts/cron/check-stuck-agents.ts",
+        "role": "فحص Agents المعلقة تلقائياً",
+        "schedule": "كل 30 دقيقة",
+        "functionality": [
+          "يفحص agents التي لم تتحدث منذ 4 ساعات",
+          "يوقفها تلقائياً",
+          "يرسل notifications"
+        ],
+        "deployment": "يعمل كـ PM2 cron job"
+      }
+    ]
+  },
+  "workflow": {
+    "description": "كيف يعمل النظام من البداية للنهاية على السيرفر",
+    "steps": [
+      {
+        "step": 1,
+        "title": "البداية",
+        "actor": "المطور",
+        "action": "يبدأ Cloud Agent بمهمة كبيرة عبر Cursor أو API",
+        "example": "أنشئ نظام E-commerce كامل مع Backend + Frontend + Tests",
+        "result": {
+          "agent_id": "bc_xyz789 (فريد من Cursor)",
+          "branch": "cursor/ecommerce-xyz789 (جديد)",
+          "status": "CREATING → RUNNING"
+        }
+      },
+      {
+        "step": 2,
+        "title": "العمل والتوقف",
+        "actor": "Cloud Agent",
+        "action": "ينجز مجموعة مهام (مثلاً: Backend structure) ثم يتوقف",
+        "reason": "Cloud Agents تتوقف دورياً لتوفير موارد وانتظار تعليمات",
+        "result": "يرسل webhook بـ status: FINISHED"
+      },
+      {
+        "step": 3,
+        "title": "استقبال Webhook (Vercel)",
+        "actor": "Vercel - Next.js API Route",
+        "location": "Vercel (المشروع الحالي cursor-monitor)",
+        "action": "يستقبل webhook في /api/cloud-agents/webhook",
+        "webhook_format": {
+          "id": "bc_xyz789",
+          "status": "FINISHED",
+          "event": "statusChange",
+          "source": {"repository": "...", "ref": "main"},
+          "target": {"branchName": "cursor/ecommerce-xyz789", "prUrl": "..."},
+          "summary": "Created backend structure"
+        },
+        "security": "يتحقق من HMAC-SHA256 signature",
+        "processing": "يضيف job للـ Redis queue (لا معالجة مباشرة)",
+        "response": "يرد 200 OK فوراً - المعالجة async في Local Server",
+        "isolation": "لا تأثير على باقي المشروع - فقط إضافة Redis connection"
+      },
+      {
+        "step": 4,
+        "title": "Background Processing",
+        "actor": "Orchestrator Worker (PM2)",
+        "action": "يستمع لـ Redis queue ويعالج webhook event",
+        "process": [
+          "يجلب state من Supabase أو ينشئ جديد",
+          "iterations += 1",
+          "updatedAt = now()",
+          "يحفظ في Supabase"
+        ],
+        "check": "إذا iterations >= maxIterations (مثلاً 20) → يوقف العملية"
+      },
+      {
+        "step": 5,
+        "title": "جلب البيانات",
+        "actor": "Orchestrator Service",
+        "location": "Local Server (مشروع منفصل)",
+        "api_calls": [
+          {
+            "endpoint": "GET /v0/agents/{agent_id}/conversation",
+            "purpose": "جلب المحادثة الكاملة - كل رسائل المستخدم والـ Agent",
+            "auth": "Basic Auth مع CURSOR_API_KEY",
+            "implementation": "يستخدم infrastructure/cursor-cloud-agents/client.ts الموجود"
+          },
+          {
+            "endpoint": "GET /v0/agents/{agent_id}",
+            "purpose": "جلب حالة Agent الحالية - branch, summary, PR url",
+            "auth": "Basic Auth مع CURSOR_API_KEY",
+            "implementation": "يستخدم infrastructure/cursor-cloud-agents/client.ts الموجود"
+          }
+        ]
+      },
+      {
+        "step": 6,
+        "title": "التحليل الذكي",
+        "actor": "Analyzer Service",
+        "process": {
+          "input": "المحادثة + الحالة + State السابق",
+          "prompt_example": "راجع هذه المحادثة من Cloud Agent وحدد: ما تم إنجازه؟ ما المتبقي؟ هل نكمل أم نختبر؟",
+          "api_call": {
+            "endpoint": "POST https://api.cursor.com/../chat",
+            "body": {
+              "model": "claude-sonnet-4",
+              "messages": [{"role": "user", "content": "..."}],
+              "temperature": 0.1
+            },
+            "implementation": "يمكن استخدام Cursor API مباشرة أو استدعاء Cursor Agent محلي"
+          },
+          "output": {
+            "action": "CONTINUE | TEST | FIX | COMPLETE",
+            "reasoning": "شرح مفصل للقرار",
+            "tasksCompleted": ["Backend", "Database schema"],
+            "tasksRemaining": ["Frontend", "Auth", "Tests"],
+            "followupMessage": "استمر في إنشاء Frontend React مع TypeScript",
+            "confidence": 0.85
+          }
+        }
+      },
+      {
+        "step": 7,
+        "title": "تنفيذ القرار",
+        "actor": "Orchestrator Service",
+        "location": "Local Server (مشروع منفصل)",
+        "scenarios": [
+          {
+            "if": "action === 'CONTINUE'",
+            "then": [
+              "يرسل POST /v0/agents/{agent_id}/followup",
+              "body: {prompt: {text: followupMessage}}",
+              "Cloud Agent يستأنف العمل",
+              "بعد فترة سيتوقف مجدداً → webhook جديد → التدفق يتكرر"
+            ]
+          },
+          {
+            "if": "action === 'TEST'",
+            "then": [
+              "يستدعي Tester Service",
+              "Tester يعمل checkout للـ branch على السيرفر",
+              "يشغل npm install && npm test && npm lint && npm build",
+              "إذا نجح: action = COMPLETE",
+              "إذا فشل: يولد fix instructions ويرسلها كـ follow-up"
+            ]
+          },
+          {
+            "if": "action === 'FIX'",
+            "then": [
+              "يرسل follow-up مع تعليمات الإصلاح",
+              "Agent يصلح الأخطاء",
+              "التدفق يتكرر"
+            ]
+          },
+          {
+            "if": "action === 'COMPLETE'",
+            "then": [
+              "يحدث status في Supabase إلى COMPLETED",
+              "يرسل notifications (Slack/Email)",
+              "يضيف comment على GitHub PR",
+              "يحذف state من Supabase (تنظيف)",
+              "العملية تنتهي ✅"
+            ]
+          }
+        ]
+      },
+      {
+        "step": 8,
+        "title": "التكرار",
+        "note": "الخطوات 2-7 تتكرر حتى الوصول لـ COMPLETE أو maxIterations",
+        "example_timeline": {
+          "09:00": "البداية - مهمة كبيرة",
+          "09:15": "Iteration 1: CONTINUE → Backend",
+          "09:30": "Iteration 2: CONTINUE → Frontend",
+          "10:00": "Iteration 3: CONTINUE → Auth",
+          "10:30": "Iteration 4: CONTINUE → Payment",
+          "11:00": "Iteration 5: CONTINUE → Tests",
+          "11:30": "Iteration 6: TEST → Testing locally",
+          "11:45": "Tests passed → COMPLETE ✅"
+        }
+      }
+    ]
+  },
+  "key_concepts": {
+    "agent_isolation": {
+      "problem": "كيف نفرق بين agents متعددة؟",
+      "solution": "كل Agent له:",
+      "unique_identifiers": {
+        "agent_id": "bc_xyz789 - يأتي من Cursor تلقائياً، فريد لكل Agent",
+        "branch_name": "cursor/ecommerce-xyz789 - branch خاص لكل Agent",
+        "database_record": "state منفصل في Supabase (agent_id UNIQUE constraint)"
+      },
+      "example": {
+        "agent1": {
+          "id": "bc_task1",
+          "branch": "cursor/ecommerce-123",
+          "task": "E-commerce system"
+        },
+        "agent2": {
+          "id": "bc_task2",
+          "branch": "cursor/blog-456",
+          "task": "Blog platform"
+        }
+      },
+      "no_conflict": "لا تداخل أبداً - كل Agent يعمل بشكل مستقل تماماً"
+    },
+    "testing_strategy": {
+      "question": "كيف نختبر بدون تأثير على main branch؟",
+      "answer": "Checkout مؤقت على السيرفر",
+      "process": [
+        "1. currentBranch = git branch --show-current (حفظ الحالي مثل main)",
+        "2. git fetch origin cursor/feature-123",
+        "3. git checkout cursor/feature-123 (الآن في البرانش الجديد على السيرفر)",
+        "4. npm install && npm test (اختبار في عزلة على السيرفر)",
+        "5. git checkout main (العودة للأصلي)",
+        "6. ✅ لم نؤثر على main أبداً"
+      ],
+      "why_no_merge": "Merge يغير main وقد يسبب conflicts - نحن فقط نختبر",
+      "server_requirement": "يحتاج PROJECT_PATH في .env يشير لمشروعك على السيرفر"
+    },
+    "webhook_security": {
+      "threat": "أي شخص يمكنه إرسال webhook مزيف",
+      "protection": "HMAC-SHA256 Signature Verification",
+      "how_it_works": {
+        "cursor_side": [
+          "1. Cursor يحسب: signature = HMAC_SHA256(SECRET, webhook_body)",
+          "2. يرسل في header: X-Webhook-Signature: sha256=<signature>"
+        ],
+        "our_side": [
+          "1. نحسب: expected = HMAC_SHA256(OUR_SECRET, received_body)",
+          "2. نقارن: if (expected === received_signature) ✅ else ❌"
+        ]
+      }
+    },
+    "infinite_loop_prevention": {
+      "problem": "Agent قد يستمر في loop لا نهائي",
+      "solutions": [
+        {
+          "method": "maxIterations",
+          "value": 20,
+          "action": "إذا iterations >= 20 → نوقف العملية ونرسل إشعار"
+        },
+        {
+          "method": "timeout",
+          "value": "4 hours",
+          "action": "إذا Agent لم يتحدث منذ 4 ساعات → نعتبره stuck ونوقفه (Cron job يفحص)"
+        },
+        {
+          "method": "confidence_threshold",
+          "logic": "إذا confidence < 0.5 لعدة iterations متتالية → نطلب تدخل بشري"
+        }
+      ]
+    },
+    "hybrid_deployment": {
+      "vercel": {
+        "project": "cursor-monitor (المشروع الحالي)",
+        "modifications": "تعديل بسيط في webhook route فقط",
+        "dependencies_to_add": ["ioredis", "bullmq"],
+        "environment_variables": {
+          "REDIS_HOST": "your-server-ip (IP السيرفر المحلي)",
+          "REDIS_PORT": "6379",
+          "REDIS_PASSWORD": "your-redis-password (إن وجد)",
+          "WEBHOOK_SECRET": "32+ chars random (نفس الـ secret في Local Server)"
+        },
+        "isolation": "لا تأثير على باقي المشروع - المشروع يبقى شغال"
+      },
+      "local_server": {
+        "project": "cursor-monitor-orchestrator (مشروع منفصل جديد)",
+        "infrastructure": {
+          "supabase": "Self-hosted محلي على السيرفر (Docker Compose) - أو cloud إذا لم ينفع",
+          "redis": "للـ queue (localhost:6379) - نفس الـ Redis الذي يتصل به Vercel",
+          "pm2": "Process manager للـ Workers + Cron jobs",
+          "cloudflare_tunnel": "لإتاحة webhook URL للـ Cursor (اختياري - يمكن استخدام Vercel URL)"
+        },
+        "environment_variables": {
+          "NEXT_PUBLIC_SUPABASE_URL": "http://localhost:8000 (Supabase محلي) أو https://xxx.supabase.co (cloud)",
+          "NEXT_PUBLIC_SUPABASE_ANON_KEY": "من Supabase",
+          "SUPABASE_SERVICE_ROLE_KEY": "من Supabase",
+          "CURSOR_API_KEY": "من cursor.com/settings",
+          "WEBHOOK_SECRET": "32+ chars random (نفس الـ secret في Vercel)",
+          "PROJECT_PATH": "/home/asce/projects/your-project (مسار المشروع على السيرفر)",
+          "REDIS_HOST": "localhost",
+          "REDIS_PORT": "6379",
+          "REDIS_PASSWORD": "your-redis-password (إن وجد)"
+        }
+      },
+      "communication": {
+        "method": "Redis Queue (BullMQ)",
+        "flow": "Vercel webhook → Redis Queue → Local Server Worker",
+        "isolation": "مشروعان منفصلان تماماً - لا HTTP calls بينهما",
+        "redis_access": "Vercel يتصل بـ Redis على Local Server (يحتاج فتح port 6379 أو VPN)"
+      }
+    }
+  },
+  "file_structure": {
+    "vercel_project": {
+      "root_directory": "cursor-monitor/ (المشروع الحالي على Vercel)",
+      "modifications": "تعديل بسيط فقط - لا تغيير في باقي الملفات",
+      "essential_files": [
+        {
+          "path": "app/api/cloud-agents/webhook/route.ts",
+          "description": "Next.js API route - يستقبل webhooks",
+          "modifications": "إضافة Redis connection + queue.add() - لا معالجة مباشرة",
+          "isolation": "لا تأثير على باقي المشروع"
+        },
+        {
+          "path": "package.json",
+          "modifications": "إضافة dependencies: ioredis, bullmq"
+        }
+      ]
+    },
+    "local_server_project": {
+      "root_directory": "cursor-monitor-orchestrator/ (مشروع منفصل جديد على Local Server)",
+      "isolation": "مشروع منفصل تماماً - لا علاقة بالمشروع الحالي",
+      "essential_files": [
+        {
+          "path": "src/services/orchestrator.service.ts",
+          "description": "الخدمة الرئيسية - تستدعى من Worker",
+          "key_functions": [
+            "processWebhookEvent() - معالجة webhook event من Redis queue",
+            "handleAgentFinished() - معالج FINISHED",
+            "executeDecision() - تنفيذ قرار Analyzer",
+            "sendFollowup() - إرسال follow-up عبر Cursor API"
+          ]
+        },
+        {
+          "path": "src/services/state-manager.service.ts",
+          "description": "إدارة Supabase database",
+          "key_functions": [
+            "saveState(agentId, state) - حفظ/تحديث في Supabase",
+            "getState(agentId) - جلب state من Supabase",
+            "incrementIterations(agentId) - زيادة العداد",
+            "deleteState(agentId) - حذف عند الانتهاء"
+          ],
+          "database": "Supabase (محلي على السيرفر أو cloud)"
+        },
+        {
+          "path": "src/services/analyzer.service.ts",
+          "description": "التحليل الذكي - قلب النظام",
+          "key_functions": [
+            "analyzeProgress() - التحليل الرئيسي",
+            "analyzeWithAPI() - استخدام Cursor API مباشرة",
+            "buildAnalysisPrompt() - بناء prompt مفصل",
+            "extractDecision() - استخراج JSON من الرد",
+            "fallbackAnalysis() - تحليل بسيط بدون AI"
+          ]
+        },
+        {
+          "path": "src/services/tester.service.ts",
+          "description": "اختبار الكود محلياً على السيرفر",
+          "key_functions": [
+            "testBranch(branchName) - الاختبار الرئيسي",
+            "runTests() - تشغيل test suite",
+            "determineTestCommands() - اكتشاف نوع المشروع",
+            "generateFixInstructions() - توليد تعليمات من أخطاء"
+          ],
+          "server_side": "يعمل على السيرفر - يحتاج PROJECT_PATH"
+        },
+        {
+          "path": "src/services/notifier.service.ts",
+          "description": "إرسال إشعارات",
+          "key_functions": [
+            "notifySuccess()",
+            "notifyFailure()",
+            "notifyProgress()",
+            "sendToSlack()"
+          ]
+        },
+        {
+          "path": "src/workers/orchestrator-worker.ts",
+          "description": "Background worker - يعمل كـ PM2 process",
+          "key_functions": [
+            "يستمع لـ Redis queue (نفس الـ queue من Vercel)",
+            "يعالج webhook events",
+            "يستدعي Orchestrator Service"
+          ]
+        },
+        {
+          "path": "src/cron/check-stuck-agents.ts",
+          "description": "Cron job - يعمل كل 30 دقيقة",
+          "key_functions": [
+            "يفحص agents المعلقة",
+            "يوقفها تلقائياً",
+            "يرسل notifications"
+          ]
+        },
+        {
+          "path": "src/queue/redis.ts",
+          "description": "Redis connection و Queue setup",
+          "key_functions": [
+            "إنشاء Redis connection",
+            "إنشاء BullMQ Queue",
+            "Export queue للاستخدام في Worker"
+          ]
+        },
+        {
+          "path": "ecosystem.config.js",
+          "description": "PM2 configuration",
+          "apps": [
+            "cursor-monitor-orchestrator-worker - Background worker",
+            "cursor-monitor-orchestrator-cron - Cron jobs"
+          ]
+        },
+        {
+          "path": "package.json",
+          "description": "Dependencies للمشروع المنفصل",
+          "dependencies": [
+            "@supabase/supabase-js",
+            "bullmq",
+            "ioredis",
+            "dotenv"
+          ]
+        }
+    ]
+  },
+  "deployment": {
+    "vercel_setup": {
+      "steps": [
+        "1. إضافة dependencies في package.json: ioredis, bullmq",
+        "2. تعديل app/api/cloud-agents/webhook/route.ts (إضافة Redis + queue)",
+        "3. إضافة environment variables في Vercel: REDIS_HOST, REDIS_PORT, REDIS_PASSWORD, WEBHOOK_SECRET",
+        "4. Deploy على Vercel",
+        "5. Test webhook → يجب أن يضيف job للـ Redis"
+      ],
+      "isolation": "لا تأثير على باقي المشروع - المشروع يبقى شغال"
+    },
+    "local_server_setup": {
+      "infrastructure": [
+        "1. تثبيت Node.js 20+",
+        "2. تثبيت Docker & Docker Compose (لـ Supabase)",
+        "3. تثبيت Redis",
+        "4. تثبيت PM2",
+        "5. فتح Redis port للـ Vercel (6379) - أو استخدام VPN/Private network"
+      ],
+      "supabase_setup": [
+        "1. Clone Supabase repo: git clone --depth 1 https://github.com/supabase/supabase.git",
+        "2. cd supabase/docker && cp .env.example .env",
+        "3. إعداد .env (generate secrets)",
+        "4. docker-compose up -d",
+        "5. إنشاء جدول agent_orchestrator_states في Supabase Studio (http://localhost:54323)"
+      ],
+      "orchestrator_project_setup": [
+        "1. إنشاء مشروع جديد: mkdir cursor-monitor-orchestrator",
+        "2. npm init -y",
+        "3. تثبيت dependencies",
+        "4. إنشاء الملفات حسب file_structure",
+        "5. إعداد .env",
+        "6. pm2 start ecosystem.config.js"
+      ],
+      "redis_access": {
+        "option1": "فتح port 6379 للـ Vercel (firewall)",
+        "option2": "استخدام VPN/Private network",
+        "option3": "استخدام Redis Cloud (إذا لم ينفع محلي)"
+      }
+    }
+  },
+  "api_reference": {
+    "vercel_api_routes": [
+      {
+        "endpoint": "POST /api/cloud-agents/webhook",
+        "location": "Vercel (المشروع الحالي)",
+        "purpose": "استقبال webhooks من Cursor",
+        "implementation": "يضيف job للـ Redis queue (لا معالجة مباشرة)",
+        "response": "200 OK فوراً (معالجة async في Local Server)",
+        "modifications": "تعديل بسيط فقط - إضافة Redis connection"
+      }
+    ],
+    "local_server": {
+      "note": "مشروع منفصل - لا API routes (يعمل كـ background worker فقط)",
+      "communication": "يتواصل مع Vercel عبر Redis Queue فقط"
+    },
+    "cursor_api_endpoints": {
+      "note": "Local Server يستخدم Cursor API مباشرة (لا يحتاج client.ts من المشروع الحالي)",
+      "endpoints": [
+        "GET /v0/agents/{id}/conversation - جلب المحادثة",
+        "GET /v0/agents/{id} - جلب حالة Agent",
+        "POST /v0/agents/{id}/followup - إرسال follow-up"
+      ],
+      "implementation": "HTTP fetch مباشر مع Cursor API"
+    }
+  },
+  "isolation_strategy": {
+    "vercel_project": {
+      "status": "يبقى شغال كما هو",
+      "modifications": "تعديل بسيط في webhook route فقط",
+      "no_breaking_changes": "لا تأثير على Dashboard, UI, أو أي features أخرى",
+      "rollback": "سهل - إزالة Redis code فقط"
+    },
+    "local_server_project": {
+      "status": "مشروع منفصل تماماً",
+      "location": "/home/asce/projects/cursor-monitor-orchestrator/",
+      "independence": "لا يعتمد على المشروع الحالي - يمكن حذفه بدون تأثير",
+      "communication": "Redis Queue فقط - لا HTTP calls"
+    },
+    "database": {
+      "location": "Supabase محلي على السيرفر (أو cloud)",
+      "isolation": "جدول منفصل (agent_orchestrator_states) - لا تأثير على جداول المشروع الحالي"
+    }
+  }
+}
+
+

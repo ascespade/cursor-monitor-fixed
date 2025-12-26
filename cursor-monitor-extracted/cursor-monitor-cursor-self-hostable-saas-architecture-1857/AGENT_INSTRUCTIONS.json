@@ -1,0 +1,175 @@
+{
+  "role": "Cloud/Local Agent - Code Review & Verification",
+  "objective": "Review and verify the new Chatwoot-style self-hostable SaaS implementation on the separate branch",
+  "branch_info": {
+    "target_branch": "cursor/self-hostable-saas-architecture-1857",
+    "note": "This branch is COMPLETELY SEPARATE from main. Do NOT merge or sync with main.",
+    "base_commit": "823e857",
+    "new_commits": [
+      "1cde718 - Add final verification report for self-hostable SaaS",
+      "0a44d3b - Refactor: Make Redis optional and use Supabase outbox"
+    ]
+  },
+  "verification_steps": [
+    {
+      "step": 1,
+      "action": "checkout_branch",
+      "command": "git fetch origin && git checkout cursor/self-hostable-saas-architecture-1857",
+      "expected": "Switched to branch 'cursor/self-hostable-saas-architecture-1857'"
+    },
+    {
+      "step": 2,
+      "action": "verify_branch_separation",
+      "commands": [
+        "git log main..cursor/self-hostable-saas-architecture-1857 --oneline",
+        "git log cursor/self-hostable-saas-architecture-1857..main --oneline"
+      ],
+      "expected": {
+        "branch_only_commits": 2,
+        "main_only_commits": 0,
+        "note": "Branch should have 2 commits that are NOT in main"
+      }
+    },
+    {
+      "step": 3,
+      "action": "verify_new_files",
+      "files_to_check": [
+        "Dockerfile",
+        "docker-compose.yml",
+        "orchestrator/Dockerfile",
+        "supabase-schema.sql",
+        "docs/FINAL_VERIFICATION.md",
+        ".env.example",
+        "ARCHITECTURE.md",
+        "SELF-HOSTING.md",
+        "app/api/cloud-agents/orchestrations/[id]/status/route.ts"
+      ],
+      "command": "ls -la Dockerfile docker-compose.yml orchestrator/Dockerfile supabase-schema.sql docs/FINAL_VERIFICATION.md",
+      "expected": "All 5+ files should exist"
+    },
+    {
+      "step": 4,
+      "action": "verify_code_changes",
+      "commands": [
+        "git diff main --name-only | wc -l",
+        "git diff main --stat | tail -5"
+      ],
+      "expected": {
+        "changed_files": "~15 files",
+        "additions": "~2102 lines",
+        "deletions": "~293 lines"
+      }
+    },
+    {
+      "step": 5,
+      "action": "verify_key_implementations",
+      "checks": [
+        {
+          "file": "orchestrator/src/queue/redis.ts",
+          "verify": "Contains checkRedisAvailability(), isRedisEnabled(), isRedisAvailable() functions",
+          "grep": "grep -E 'checkRedisAvailability|isRedisEnabled|isRedisAvailable' orchestrator/src/queue/redis.ts"
+        },
+        {
+          "file": "orchestrator/src/workers/orchestrator-worker.ts",
+          "verify": "Worker starts without Redis, uses outbox processor",
+          "grep": "grep -E 'startOutboxProcessor|checkRedisAvailability' orchestrator/src/workers/orchestrator-worker.ts"
+        },
+        {
+          "file": "app/api/cloud-agents/orchestrations/[id]/status/route.ts",
+          "verify": "New status route exists and reads from database",
+          "command": "test -f app/api/cloud-agents/orchestrations/\\[id\\]/status/route.ts && echo 'exists'"
+        },
+        {
+          "file": "supabase-schema.sql",
+          "verify": "Contains all 6 required tables",
+          "grep": "grep -c 'CREATE TABLE' supabase-schema.sql"
+        }
+      ]
+    },
+    {
+      "step": 6,
+      "action": "verify_database_schema",
+      "command": "grep -E 'orchestrations|orchestration_events|orchestration_tasks|orchestration_outbox|service_health|agent_orchestrator_states' supabase-schema.sql | head -10",
+      "expected": "Should show all 6 tables: orchestrations, orchestration_events, orchestration_tasks, orchestration_outbox_jobs, service_health_events, agent_orchestrator_states"
+    },
+    {
+      "step": 7,
+      "action": "verify_docker_configuration",
+      "commands": [
+        "test -f Dockerfile && echo 'App Dockerfile exists'",
+        "test -f orchestrator/Dockerfile && echo 'Worker Dockerfile exists'",
+        "test -f docker-compose.yml && echo 'docker-compose.yml exists'",
+        "grep -E 'app:|worker:' docker-compose.yml | head -2"
+      ],
+      "expected": "All Docker files should exist"
+    },
+    {
+      "step": 8,
+      "action": "verify_redis_optional_implementation",
+      "commands": [
+        "grep -r 'getOrchestratorQueue()' --include='*.ts' | wc -l",
+        "grep -r 'orchestration_outbox_jobs' --include='*.ts' | wc -l"
+      ],
+      "expected": {
+        "redis_optional_refs": "6+ files handle optional Redis",
+        "outbox_pattern_refs": "6+ files use outbox pattern"
+      }
+    }
+  ],
+  "key_changes_summary": {
+    "architecture": "Chatwoot-style self-hostable SaaS",
+    "redis_status": "OPTIONAL - System works without Redis using Supabase outbox pattern",
+    "database_first": "All state persisted to Supabase (orchestrations, events, tasks, outbox)",
+    "containers": [
+      "app: Next.js UI + API routes",
+      "worker: Background orchestration processing"
+    ],
+    "new_files": [
+      "Dockerfile (app container)",
+      "docker-compose.yml (local self-hosting)",
+      "orchestrator/Dockerfile (worker container)",
+      "supabase-schema.sql (complete database schema)",
+      "docs/FINAL_VERIFICATION.md (verification report)",
+      ".env.example (environment template)",
+      "ARCHITECTURE.md (architecture docs)",
+      "SELF-HOSTING.md (setup guide)",
+      "app/api/cloud-agents/orchestrations/[id]/status/route.ts (new status route)"
+    ],
+    "modified_files": [
+      "orchestrator/src/queue/redis.ts (made Redis optional)",
+      "orchestrator/src/workers/orchestrator-worker.ts (database-first worker)",
+      "app/api/cloud-agents/orchestrate/route.ts (handle optional Redis)",
+      "app/api/cloud-agents/health/route.ts (handle optional Redis)",
+      "src/features/cloud-agents/orchestrator/queue/redis.ts (made Redis optional)",
+      "next.config.mjs (enable standalone output)"
+    ]
+  },
+  "important_notes": [
+    "⚠️ DO NOT merge this branch with main",
+    "⚠️ DO NOT sync this branch with main",
+    "✅ This branch is completely separate from main",
+    "✅ All changes are isolated to this branch only",
+    "✅ Main branch is protected and unaffected",
+    "✅ Redis is OPTIONAL - system works without it",
+    "✅ Database is the system of record (Supabase)",
+    "✅ Outbox pattern used for reliable job processing"
+  ],
+  "verification_commands": {
+    "quick_check": "git branch --show-current && git log --oneline -3 && ls -1 Dockerfile docker-compose.yml orchestrator/Dockerfile supabase-schema.sql docs/FINAL_VERIFICATION.md 2>/dev/null | wc -l",
+    "full_verification": "git fetch origin && git checkout cursor/self-hostable-saas-architecture-1857 && git log main..HEAD --oneline && git diff main --name-only | wc -l",
+    "file_verification": "test -f Dockerfile && test -f docker-compose.yml && test -f orchestrator/Dockerfile && test -f supabase-schema.sql && test -f docs/FINAL_VERIFICATION.md && echo 'All files exist'"
+  },
+  "expected_outputs": {
+    "branch_check": "cursor/self-hostable-saas-architecture-1857",
+    "commits_count": "2 commits in branch not in main",
+    "files_count": "15 files different from main",
+    "new_files_exist": "5+ new files (Dockerfile, docker-compose.yml, etc.)",
+    "schema_tables": "6 tables in supabase-schema.sql"
+  },
+  "documentation": {
+    "architecture": "See ARCHITECTURE.md for full architecture details",
+    "setup": "See SELF-HOSTING.md for setup instructions",
+    "verification": "See docs/FINAL_VERIFICATION.md for complete verification report",
+    "schema": "See supabase-schema.sql for database schema"
+  }
+}

@@ -1,0 +1,350 @@
+{
+  "version": "1.0.0",
+  "environment": "hybrid-local-cloud",
+  "description": "Complete architecture specification for Next.js Automation Server with Cursor Cloud Agents integration",
+  "lastUpdated": "2024-12-19",
+  
+  "components": {
+    "frontend": {
+      "platform": "Next.js 14.2.5",
+      "framework": "React 18",
+      "deployments": {
+        "local": {
+          "runtime": "Node.js 20 + PM2",
+          "entry": "npm run dev",
+          "port": 3002,
+          "processManager": "PM2",
+          "autoRestart": true,
+          "env": {
+            "NODE_ENV": "development",
+            "PORT": "3002"
+          }
+        },
+        "vercel": {
+          "enabled": true,
+          "usage": [
+            "UI Rendering",
+            "Static Assets",
+            "Edge Functions",
+            "Webhook Reception"
+          ],
+          "env": {
+            "REDIS_HOST": "PUBLIC_IP_OR_TUNNEL",
+            "REDIS_PORT": "6379",
+            "REDIS_PASSWORD": "optional",
+            "SUPABASE_URL": "https://cloud.supabase.co or local tunnel",
+            "CURSOR_API_KEY": "from env vars",
+            "WEBHOOK_SECRET": "shared with local server"
+          },
+          "endpoints": {
+            "webhook": "/api/cloud-agents/webhook",
+            "health": "/api/cloud-agents/health"
+          }
+        }
+      }
+    },
+    
+    "backend": {
+      "tasks_engine": "Cursor Cloud Agents",
+      "execution": "Local Server (Linux)",
+      "communication": {
+        "inbound": [
+          "Webhook → Cursor API",
+          "Vercel → Redis Queue",
+          "User → Settings API"
+        ],
+        "outbound": [
+          "Cursor API → Analysis",
+          "Redis Queue → Worker",
+          "Worker → Supabase",
+          "Worker → Local Git/Testing"
+        ]
+      },
+      "services": {
+        "orchestrator": {
+          "location": "local",
+          "script": "src/workers/orchestrator-worker.ts",
+          "manager": "PM2",
+          "responsibilities": [
+            "Process Redis queue jobs",
+            "Analyze agent conversations",
+            "Make decisions (CONTINUE/TEST/COMPLETE)",
+            "Execute local code testing",
+            "Update state in Supabase"
+          ]
+        },
+        "settings": {
+          "location": "local",
+          "script": "src/server/settings-server.ts",
+          "port": 3001,
+          "responsibilities": [
+            "Manage .env file",
+            "Test connections (Cursor/Redis/Supabase)",
+            "Provide web UI for configuration"
+          ]
+        },
+        "cron": {
+          "location": "local",
+          "script": "src/cron/check-stuck-agents.ts",
+          "schedule": "*/30 * * * *",
+          "responsibilities": [
+            "Check for stuck agents",
+            "Handle timeouts",
+            "Clean up old states"
+          ]
+        }
+      }
+    },
+    
+    "redis": {
+      "mode": "shared",
+      "purpose": "Global Task Queue & State Sync",
+      "local": {
+        "host": "127.0.0.1",
+        "port": 6379,
+        "password": "optional",
+        "config": "/etc/redis/redis.conf"
+      },
+      "external_access": {
+        "enabled": true,
+        "bind": "0.0.0.0",
+        "protected_mode": false,
+        "security": {
+          "recommendations": [
+            "Set password in redis.conf",
+            "Use IP whitelist (ufw)",
+            "Consider VPN (Tailscale)",
+            "Or use Cloudflare Tunnel"
+          ]
+        }
+      },
+      "use_cases": [
+        "task_queue",
+        "automation_state",
+        "cursor_job_status",
+        "cross_deployment_sync",
+        "webhook_to_worker_communication"
+      ],
+      "queue_system": "BullMQ",
+      "queues": {
+        "orchestrator": {
+          "name": "cursor-orchestrator",
+          "concurrency": 1,
+          "attempts": 3
+        }
+      }
+    },
+    
+    "supabase": {
+      "local": {
+        "enabled": true,
+        "services": [
+          "auth",
+          "db",
+          "storage",
+          "realtime"
+        ],
+        "port": 54321,
+        "setup": "docker-compose or local install",
+        "tables": {
+          "agent_orchestrator_states": {
+            "purpose": "Track agent state and progress",
+            "fields": [
+              "agent_id",
+              "conversation_id",
+              "state",
+              "iteration_count",
+              "last_updated"
+            ]
+          }
+        }
+      },
+      "cloud_optional": {
+        "enabled": false,
+        "sync_strategy": "logical_separation",
+        "note": "Can use cloud Supabase for production data"
+      }
+    },
+    
+    "cursor_api": {
+      "endpoint": "https://api.cursor.com/v0",
+      "authentication": "API Key",
+      "usage": [
+        "Get agent info",
+        "Analyze conversations",
+        "Make decisions",
+        "Send followup messages"
+      ],
+      "rate_limits": "Check Cursor API docs",
+      "security": "API key stored in .env"
+    },
+    
+    "webhooks": {
+      "inbound": {
+        "vercel": [
+          "/api/cloud-agents/webhook"
+        ],
+        "local": [
+          "/api/settings",
+          "/api/test/*"
+        ]
+      },
+      "outbound": {
+        "cursor": "Cursor Cloud Agents API",
+        "vercel": "Vercel Edge Functions"
+      },
+      "security": {
+        "signature": "HMAC-SHA256",
+        "shared_secret": true,
+        "verification": "Webhook signature verification in route handler"
+      },
+      "flow": {
+        "1": "Cursor sends webhook to Vercel",
+        "2": "Vercel verifies signature",
+        "3": "Vercel queues job to Redis",
+        "4": "Local worker processes job",
+        "5": "Worker updates Supabase",
+        "6": "Worker sends notifications (optional)"
+      }
+    },
+    
+    "local_testing": {
+      "enabled": true,
+      "project_path": "/home/asce/projects/nodejs/cursor-monitor",
+      "commands": [
+        "git checkout",
+        "npm install",
+        "npm test",
+        "npm run lint",
+        "npm run build"
+      ],
+      "isolation": "Each agent has separate git branch/state"
+    }
+  },
+  
+  "deployment": {
+    "local_server": {
+      "os": "Linux (Ubuntu/Debian)",
+      "process_manager": "PM2",
+      "services": [
+        "Next.js Dev Server",
+        "Orchestrator Worker",
+        "Settings Server",
+        "Cron Jobs",
+        "Redis",
+        "Nginx"
+      ],
+      "startup": "pm2 startup && pm2 save"
+    },
+    "vercel": {
+      "platform": "Vercel",
+      "services": [
+        "Next.js Production",
+        "Webhook Handler",
+        "Health Check API"
+      ],
+      "env_vars": "Set in Vercel dashboard"
+    }
+  },
+  
+  "data_flow": {
+    "webhook_reception": {
+      "step": 1,
+      "location": "Vercel",
+      "action": "Receive webhook from Cursor",
+      "validation": "Verify signature"
+    },
+    "job_queuing": {
+      "step": 2,
+      "location": "Vercel",
+      "action": "Add job to Redis queue",
+      "queue": "cursor-orchestrator"
+    },
+    "job_processing": {
+      "step": 3,
+      "location": "Local Server",
+      "action": "Worker picks up job from Redis",
+      "worker": "orchestrator-worker.ts"
+    },
+    "analysis": {
+      "step": 4,
+      "location": "Local Server",
+      "action": "Analyze conversation with Cursor API",
+      "decision": "CONTINUE | TEST | COMPLETE"
+    },
+    "execution": {
+      "step": 5,
+      "location": "Local Server",
+      "action": "Execute decision (test code, send followup, etc.)",
+      "state_update": "Update Supabase"
+    },
+    "notification": {
+      "step": 6,
+      "location": "Local Server",
+      "action": "Send notifications (Slack, etc.)",
+      "optional": true
+    }
+  },
+  
+  "security": {
+    "redis": {
+      "recommendations": [
+        "Set password in redis.conf",
+        "Use IP whitelist",
+        "Consider VPN",
+        "Or use Cloudflare Tunnel"
+      ]
+    },
+    "webhooks": {
+      "verification": "HMAC-SHA256 signature",
+      "shared_secret": "WEBHOOK_SECRET env var"
+    },
+    "api_keys": {
+      "storage": ".env file (never commit)",
+      "rotation": "Manual rotation recommended"
+    },
+    "firewall": {
+      "ports_open": [80, 443, 3000, 3001, 3002, 6379, 54321],
+      "recommendation": "Restrict 6379 to specific IPs"
+    }
+  },
+  
+  "monitoring": {
+    "pm2": {
+      "commands": [
+        "pm2 list",
+        "pm2 logs",
+        "pm2 monit"
+      ]
+    },
+    "redis": {
+      "commands": [
+        "redis-cli ping",
+        "redis-cli info",
+        "redis-cli monitor"
+      ]
+    },
+    "health_checks": {
+      "vercel": "/api/cloud-agents/health",
+      "local": "http://localhost:3001/api/settings"
+    }
+  },
+  
+  "troubleshooting": {
+    "redis_connection": {
+      "check": "redis-cli -h HOST -p PORT ping",
+      "firewall": "sudo ufw status",
+      "config": "sudo nano /etc/redis/redis.conf"
+    },
+    "pm2_issues": {
+      "logs": "pm2 logs",
+      "restart": "pm2 restart all",
+      "delete": "pm2 delete app_name"
+    },
+    "nginx": {
+      "test": "sudo nginx -t",
+      "reload": "sudo systemctl reload nginx",
+      "logs": "sudo tail -f /var/log/nginx/error.log"
+    }
+  }
+}
