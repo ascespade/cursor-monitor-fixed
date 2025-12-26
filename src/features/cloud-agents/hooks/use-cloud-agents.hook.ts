@@ -2,9 +2,10 @@
  * useCloudAgents - Real-time Agent Monitoring
  *
  * Features:
- * - Real-time polling when agent is selected
+ * - Fast initial load with recent messages
+ * - Pagination for loading older messages
+ * - Real-time polling for new messages
  * - Agent activity logs panel
- * - Smart message updates
  */
 'use client';
 
@@ -45,6 +46,10 @@ interface UseCloudAgentsState {
     userEmail?: string;
   };
   isConversationLoading: boolean;
+  // Pagination state
+  oldestMessageId?: string;
+  hasMoreMessages: boolean;
+  isLoadingMore: boolean;
   // Agent activity logs
   agentLogs: AgentLog[];
 }
@@ -54,6 +59,7 @@ export function useCloudAgents(options: UseCloudAgentsOptions = {}): {
   selectAgent: (id: string) => Promise<void>;
   refresh: () => Promise<void>;
   refreshConversation: () => Promise<void>;
+  loadOlderMessages: () => Promise<void>;
   addMessageToConversation: (agentId: string, message: { type: string; text: string; id?: string; createdAt?: string }) => void;
   markAllMessagesRead: () => void;
   clearAgentLogs: () => void;
@@ -63,18 +69,19 @@ export function useCloudAgents(options: UseCloudAgentsOptions = {}): {
     conversationsByAgentId: {},
     loading: false,
     userInfoLoading: false,
+    hasMoreMessages: true,
+    isLoadingMore: false,
     agentLogs: [],
     isConversationLoading: false
   });
 
-  const { configId, apiKey, pollIntervalMs, conversationPollIntervalMs = 2000 } = options;
+  const { configId, apiKey, pollIntervalMs, conversationPollIntervalMs = 3000 } = options;
 
   // Refs for polling management
   const abortControllerRef = useRef<AbortController | null>(null);
   const pollTimeoutRef = useRef<NodeJS.Timeout | null>(null);
   const isPollingRef = useRef<boolean>(false);
   const currentAgentIdRef = useRef<string>('');
-  const lastFetchTimeRef = useRef<number>(0);
 
   // Helper to add log
   const addLog = useCallback((agentId: string, type: AgentLog['type'], message: string): void => {
@@ -148,8 +155,13 @@ export function useCloudAgents(options: UseCloudAgentsOptions = {}): {
     }
   }, [apiKey, configId]);
 
-  // Load conversation for an agent
-  const loadConversation = useCallback(async (agentId: string, forceFresh = false): Promise<void> => {
+  // Load conversation for an agent - optimized for fast initial load
+  const loadConversation = useCallback(async (agentId: string, options?: { 
+    forceFresh?: boolean; 
+    appendOlder?: boolean;
+  }): Promise<void> => {
+    const { forceFresh = false, appendOlder = false } = options || {};
+
     // Cancel any pending request
     if (abortControllerRef.current) {
       abortControllerRef.current.abort();
@@ -157,15 +169,6 @@ export function useCloudAgents(options: UseCloudAgentsOptions = {}): {
 
     const controller = new AbortController();
     abortControllerRef.current = controller;
-
-    const now = Date.now();
-    
-    // Don't poll too frequently (minimum 500ms between polls)
-    if (!forceFresh && now - lastFetchTimeRef.current < 500) {
-      return;
-    }
-    
-    lastFetchTimeRef.current = now;
 
     try {
       const data = await fetchCloudAgentConversation(agentId, apiKey ? { apiKey } : { configId }, controller.signal);
@@ -175,24 +178,25 @@ export function useCloudAgents(options: UseCloudAgentsOptions = {}): {
       setState((prev) => {
         const currentConversation = prev.conversationsByAgentId[agentId] ?? prev.conversation;
         const currentMessages = currentConversation?.messages ?? [];
-        const currentMessageCount = currentMessages.length;
 
-        // If forced fresh load or messages count changed, update
-        if (forceFresh || serverMessageCount !== currentMessageCount) {
+        // If loading older messages, prepend unique ones to existing messages
+        if (appendOlder && currentMessages.length > 0) {
+          const existingIds = new Set(currentMessages.map(m => m.id).filter(Boolean));
+          const olderMessages = serverMessages
+            .filter(m => !m.id || !existingIds.has(m.id))
+            .reverse(); // Oldest first
+
+          if (olderMessages.length === 0) {
+            return { ...prev, hasMoreMessages: false, isLoadingMore: false };
+          }
+
+          const updatedMessages = [...olderMessages, ...currentMessages];
           const updatedConversation: CursorConversationResponse = {
-            ...data,
-            messages: serverMessages
+            ...currentConversation,
+            messages: updatedMessages
           };
 
-          // Log message count change
-          if (serverMessageCount !== currentMessageCount && agentId === prev.selectedAgentId) {
-            const diff = serverMessageCount - currentMessageCount;
-            addLog(agentId, diff > 0 ? 'action' : 'info', 
-              diff > 0 
-                ? `${diff} new message${diff > 1 ? 's' : ''} received (${serverMessageCount} total)`
-                : `Messages reset to ${serverMessageCount}`
-            );
-          }
+          addLog(agentId, 'info', `Loaded ${olderMessages.length} older messages`);
 
           return {
             ...prev,
@@ -201,12 +205,43 @@ export function useCloudAgents(options: UseCloudAgentsOptions = {}): {
               ...prev.conversationsByAgentId,
               [agentId]: updatedConversation
             },
+            oldestMessageId: olderMessages[0]?.id,
+            hasMoreMessages: true, // Keep trying until we get no more
+            isLoadingMore: false,
             isConversationLoading: false
           };
         }
 
-        // Messages are the same, no update needed
-        return prev;
+        // Normal load - replace messages
+        const updatedConversation: CursorConversationResponse = {
+          ...data,
+          messages: serverMessages
+        };
+
+        // Log message count on initial load
+        if (agentId === prev.selectedAgentId && prev.conversation?.messages === undefined) {
+          addLog(agentId, 'info', `${serverMessageCount} messages loaded`);
+        } else if (agentId === prev.selectedAgentId && serverMessageCount !== currentMessages.length) {
+          const diff = serverMessageCount - currentMessages.length;
+          addLog(agentId, diff > 0 ? 'action' : 'info', 
+            diff > 0 
+              ? `${diff} new message${diff > 1 ? 's' : ''} (${serverMessageCount} total)`
+              : `Messages: ${serverMessageCount}`
+          );
+        }
+
+        return {
+          ...prev,
+          conversation: agentId === prev.selectedAgentId ? updatedConversation : prev.conversation,
+          conversationsByAgentId: {
+            ...prev.conversationsByAgentId,
+            [agentId]: updatedConversation
+          },
+          oldestMessageId: serverMessages[0]?.id,
+          hasMoreMessages: true,
+          isLoadingMore: false,
+          isConversationLoading: false
+        };
       });
     } catch (error) {
       if (error instanceof Error && error.name === 'AbortError') {
@@ -214,9 +249,22 @@ export function useCloudAgents(options: UseCloudAgentsOptions = {}): {
       }
 
       const message = error instanceof Error ? error.message : 'Failed to load conversation';
-      setState((prev) => ({ ...prev, error: message, isConversationLoading: false }));
+      setState((prev) => ({ ...prev, error: message, isConversationLoading: false, isLoadingMore: false }));
     }
   }, [apiKey, configId, addLog]);
+
+  // Load older messages for pagination
+  const loadOlderMessages = useCallback(async (): Promise<void> => {
+    const agentId = state.selectedAgentId;
+    if (!agentId || !state.conversation?.messages || state.isLoadingMore) {
+      return;
+    }
+
+    setState((prev) => ({ ...prev, isLoadingMore: true }));
+
+    // For pagination, reload all messages and filter out ones we already have
+    await loadConversation(agentId, { appendOlder: true });
+  }, [state.selectedAgentId, state.conversation?.messages, state.isLoadingMore, loadConversation]);
 
   // Select an agent - fetch conversation and prepare for polling
   const selectAgent = useCallback(async (id: string): Promise<void> => {
@@ -232,7 +280,10 @@ export function useCloudAgents(options: UseCloudAgentsOptions = {}): {
         ...prev,
         selectedAgentId: undefined,
         conversation: undefined,
-        isConversationLoading: false
+        isConversationLoading: false,
+        hasMoreMessages: true,
+        isLoadingMore: false,
+        oldestMessageId: undefined
       }));
       return;
     }
@@ -241,15 +292,18 @@ export function useCloudAgents(options: UseCloudAgentsOptions = {}): {
     setState((prev) => ({
       ...prev,
       selectedAgentId: id,
-      isConversationLoading: true
+      isConversationLoading: true,
+      hasMoreMessages: true,
+      isLoadingMore: false,
+      oldestMessageId: undefined
     }));
 
     currentAgentIdRef.current = id;
 
     addLog(id, 'info', 'Opening conversation...');
     
-    // Force fresh load when selecting
-    await loadConversation(id, true);
+    // Force fresh load when selecting - FAST
+    await loadConversation(id, { forceFresh: true });
     
     // Mark as polling now
     isPollingRef.current = true;
@@ -259,7 +313,7 @@ export function useCloudAgents(options: UseCloudAgentsOptions = {}): {
   const refresh = useCallback(async (): Promise<void> => {
     await loadAgents();
     if (state.selectedAgentId) {
-      await loadConversation(state.selectedAgentId, true);
+      await loadConversation(state.selectedAgentId, { forceFresh: true });
     }
   }, [loadAgents, loadConversation, state.selectedAgentId]);
 
@@ -267,7 +321,7 @@ export function useCloudAgents(options: UseCloudAgentsOptions = {}): {
   const refreshConversation = useCallback(async (): Promise<void> => {
     if (state.selectedAgentId) {
       addLog(state.selectedAgentId, 'info', 'Refreshing conversation...');
-      await loadConversation(state.selectedAgentId, true);
+      await loadConversation(state.selectedAgentId, { forceFresh: true });
     }
   }, [loadConversation, state.selectedAgentId, addLog]);
 
@@ -352,9 +406,6 @@ export function useCloudAgents(options: UseCloudAgentsOptions = {}): {
 
     const agentId = state.selectedAgentId;
 
-    // Don't poll if we just selected (give it a moment)
-    // The initial load is done in selectAgent
-
     const pollInterval = conversationPollIntervalMs;
 
     const poll = async () => {
@@ -378,7 +429,7 @@ export function useCloudAgents(options: UseCloudAgentsOptions = {}): {
       }
 
       // Fetch fresh conversation data
-      await loadConversation(agentId, false);
+      await loadConversation(agentId, { forceFresh: false });
 
       // Schedule next poll
       if (isPollingRef.current && currentAgentIdRef.current === agentId) {
@@ -386,7 +437,7 @@ export function useCloudAgents(options: UseCloudAgentsOptions = {}): {
       }
     };
 
-    // Start polling
+    // Start polling immediately
     pollTimeoutRef.current = setTimeout(poll, pollInterval);
 
     return () => {
@@ -405,6 +456,7 @@ export function useCloudAgents(options: UseCloudAgentsOptions = {}): {
     selectAgent,
     refresh,
     refreshConversation,
+    loadOlderMessages,
     addMessageToConversation,
     markAllMessagesRead,
     clearAgentLogs

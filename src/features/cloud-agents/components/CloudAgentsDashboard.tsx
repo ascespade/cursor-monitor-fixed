@@ -417,6 +417,7 @@ export const CloudAgentsDashboard: FC<CloudAgentsDashboardProps> = ({ initialCon
     selectAgent,
     refresh,
     refreshConversation,
+    loadOlderMessages,
     addMessageToConversation,
     markAllMessagesRead,
     clearAgentLogs
@@ -1336,6 +1337,29 @@ export const CloudAgentsDashboard: FC<CloudAgentsDashboardProps> = ({ initialCon
                 onScroll={handleScroll}
                 className="flex-1 overflow-y-auto p-3 sm:p-4 space-y-3 scroll-smooth"
               >
+                {/* Load More Button - Show when scrolled up */}
+                <div className="flex justify-center py-2">
+                  {state.isLoadingMore ? (
+                    <div className="flex items-center gap-2 text-xs text-muted-foreground">
+                      <svg className="animate-spin h-4 w-4" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24">
+                        <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
+                        <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z" />
+                      </svg>
+                      Loading older messages...
+                    </div>
+                  ) : state.hasMoreMessages ? (
+                    <button
+                      type="button"
+                      onClick={() => void loadOlderMessages()}
+                      className="px-4 py-1.5 text-xs font-medium rounded-lg border border-border bg-card text-muted-foreground hover:text-foreground hover:bg-card-raised transition-colors focus:outline-none focus:ring-2 focus:ring-primary/50"
+                    >
+                      Load older messages
+                    </button>
+                  ) : (
+                    <span className="text-xs text-muted-foreground/50">No more messages</span>
+                  )}
+                </div>
+
                 {/* Thinking Indicator */}
                 {currentAgent?.status === 'RUNNING' && (
                   <div className="flex items-center justify-start py-3 px-4">
