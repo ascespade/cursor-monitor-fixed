@@ -153,7 +153,7 @@ export function useCloudAgents(options: UseCloudAgentsOptions = {}): {
   }, [apiKey, configId]);
 
   // Load conversation for an agent
-  const loadConversation = useCallback(async (agentId: string, isInitialLoad = true): Promise<void> => {
+  const loadConversation = useCallback(async (agentId: string, forceFullLoad = false): Promise<void> => {
     // Cancel any pending request
     if (abortControllerRef.current) {
       abortControllerRef.current.abort();
@@ -175,15 +175,23 @@ export function useCloudAgents(options: UseCloudAgentsOptions = {}): {
         // Get last known count for this agent
         const lastKnownCount = prev.messageCountByAgentId[agentId] ?? currentMessageCount;
 
-        if (isInitialLoad) {
-          // First load: take ALL messages and update count
+        // Get current agent status to check if finished
+        const currentAgent = prev.agents.find(a => a.id === agentId);
+        const isAgentFinished = currentAgent?.status === 'FINISHED' || currentAgent?.status === 'ERROR' || currentAgent?.status === 'EXPIRED';
+
+        // If forceFullLoad or agent finished, fetch ALL messages fresh
+        if (forceFullLoad || isAgentFinished) {
           const updatedConversation: CursorConversationResponse = {
             ...data,
             messages: serverMessages
           };
 
-          if (serverMessageCount > 0 && agentId === prev.selectedAgentId) {
-            addLog(agentId, 'info', `Loaded ${serverMessageCount} messages`);
+          if (agentId === prev.selectedAgentId) {
+            addLog(agentId, isAgentFinished ? 'success' : 'info', 
+              isAgentFinished 
+                ? `Agent finished - loaded ${serverMessageCount} messages`
+                : `Loaded ${serverMessageCount} messages`
+            );
           }
 
           return {
@@ -406,9 +414,13 @@ export function useCloudAgents(options: UseCloudAgentsOptions = {}): {
       currentAgentIdRef.current = agentId;
       addLog(agentId, 'success', 'Agent started - watching for updates...');
     } else if (!isNowRunning && wasRunning) {
-      // Agent stopped - stop polling
+      // Agent stopped - fetch final messages one last time before stopping
+      addLog(agentId, 'info', 'Agent stopped - fetching final messages...');
       isPollingRef.current = false;
-      addLog(agentId, 'info', 'Agent stopped');
+      // Do a final fetch to get all messages
+      setTimeout(() => {
+        loadConversation(agentId, false);
+      }, 500);
     } else if (!isNowRunning) {
       // Agent not running - don't poll
       return;
@@ -451,7 +463,7 @@ export function useCloudAgents(options: UseCloudAgentsOptions = {}): {
     };
 
     // Start polling (or restart if was interrupted)
-    pollTimeoutRef.current = setTimeout(poll, 500); // Start with short delay
+    pollTimeoutRef.current = setTimeout(poll, 300); // Start faster with 300ms
 
     return () => {
       if (pollTimeoutRef.current) {
@@ -460,6 +472,7 @@ export function useCloudAgents(options: UseCloudAgentsOptions = {}): {
       if (abortControllerRef.current) {
         abortControllerRef.current.abort();
       }
+      isPollingRef.current = false;
     };
   }, [state.selectedAgentId, state.agents, conversationPollIntervalMs, loadConversation, addLog]);
 
