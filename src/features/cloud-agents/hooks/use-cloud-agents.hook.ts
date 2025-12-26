@@ -1,10 +1,10 @@
 /**
- * useCloudAgents - Smart Message Fetching
+ * useCloudAgents - Real-time Agent Monitoring
  *
- * Purpose:
- * - First load: fetch ALL messages and store count
- * - Background poll: fetch ALL, compare counts, add ONLY new messages (the difference)
- * - No re-adding existing messages
+ * Features:
+ * - Real-time polling when agent is RUNNING
+ * - Agent activity logs panel
+ * - Progressive message updates
  */
 'use client';
 
@@ -24,6 +24,13 @@ interface UseCloudAgentsOptions {
   conversationPollIntervalMs?: number;
 }
 
+interface AgentLog {
+  id: string;
+  timestamp: string;
+  type: 'info' | 'success' | 'error' | 'action';
+  message: string;
+}
+
 interface UseCloudAgentsState {
   agents: CursorAgent[];
   selectedAgentId?: string;
@@ -38,8 +45,10 @@ interface UseCloudAgentsState {
     userEmail?: string;
   };
   isConversationLoading: boolean;
-  // Track message count per agent to detect new messages efficiently
+  // Track message count per agent
   messageCountByAgentId: Record<string, number>;
+  // Agent activity logs
+  agentLogs: AgentLog[];
 }
 
 export function useCloudAgents(options: UseCloudAgentsOptions = {}): {
@@ -49,6 +58,7 @@ export function useCloudAgents(options: UseCloudAgentsOptions = {}): {
   refreshConversation: () => Promise<void>;
   addMessageToConversation: (agentId: string, message: { type: string; text: string; id?: string; createdAt?: string }) => void;
   markAllMessagesRead: () => void;
+  clearAgentLogs: () => void;
 } {
   const [state, setState] = useState<UseCloudAgentsState>({
     agents: [],
@@ -56,16 +66,34 @@ export function useCloudAgents(options: UseCloudAgentsOptions = {}): {
     loading: false,
     userInfoLoading: false,
     messageCountByAgentId: {},
+    agentLogs: [],
     isConversationLoading: false
   });
 
-  const { configId, apiKey, pollIntervalMs, conversationPollIntervalMs = 5000 } = options;
+  const { configId, apiKey, pollIntervalMs, conversationPollIntervalMs = 3000 } = options;
 
   // Refs for polling management
   const abortControllerRef = useRef<AbortController | null>(null);
   const pollTimeoutRef = useRef<NodeJS.Timeout | null>(null);
   const isPollingRef = useRef<boolean>(false);
   const currentAgentIdRef = useRef<string>('');
+  const lastAgentStatusRef = useRef<Record<string, string>>({});
+
+  // Helper to add log
+  const addLog = useCallback((agentId: string, type: AgentLog['type'], message: string): void => {
+    setState((prev) => ({
+      ...prev,
+      agentLogs: [
+        {
+          id: `${Date.now()}-${Math.random().toString(36).substr(2, 9)}`,
+          timestamp: new Date().toISOString(),
+          type,
+          message
+        },
+        ...prev.agentLogs.slice(0, 99) // Keep last 100 logs
+      ]
+    }));
+  }, []);
 
   // Load user info
   const loadUserInfo = useCallback(async (): Promise<void> => {
@@ -100,7 +128,24 @@ export function useCloudAgents(options: UseCloudAgentsOptions = {}): {
     setState((prev) => ({ ...prev, loading: true, error: undefined }));
     try {
       const data = await fetchCloudAgents({ apiKey, configId, limit: 50 });
-      setState((prev) => ({ ...prev, agents: data.agents ?? [], loading: false }));
+      
+      // Check for status changes and log them
+      setState((prev) => {
+        const newLogs = [...prev.agentLogs];
+        data.agents?.forEach((agent) => {
+          const oldStatus = lastAgentStatusRef.current[agent.id];
+          if (oldStatus && oldStatus !== agent.status) {
+            newLogs.unshift({
+              id: `status-${Date.now()}`,
+              timestamp: new Date().toISOString(),
+              type: agent.status === 'RUNNING' ? 'success' : 'info',
+              message: `Agent "${agent.name ?? agent.id}" status: ${oldStatus} → ${agent.status}`
+            });
+          }
+          lastAgentStatusRef.current[agent.id] = agent.status ?? 'UNKNOWN';
+        });
+        return { ...prev, agents: data.agents ?? [], loading: false, agentLogs: newLogs };
+      });
     } catch (error) {
       const message = error instanceof Error ? error.message : 'Failed to load agents';
       setState((prev) => ({ ...prev, loading: false, error: message }));
@@ -137,6 +182,10 @@ export function useCloudAgents(options: UseCloudAgentsOptions = {}): {
             messages: serverMessages
           };
 
+          if (serverMessageCount > 0 && agentId === prev.selectedAgentId) {
+            addLog(agentId, 'info', `Loaded ${serverMessageCount} messages`);
+          }
+
           return {
             ...prev,
             conversation: agentId === prev.selectedAgentId ? updatedConversation : prev.conversation,
@@ -154,13 +203,18 @@ export function useCloudAgents(options: UseCloudAgentsOptions = {}): {
 
         // Background poll: only add NEW messages (difference between counts)
         if (serverMessageCount <= lastKnownCount) {
-          // No new messages or messages were removed - do nothing
           return prev;
         }
 
         // Calculate how many new messages to add
         const newMessagesCount = serverMessageCount - lastKnownCount;
         const newMessages = serverMessages.slice(lastKnownCount, serverMessageCount);
+
+        // Log new messages
+        if (newMessagesCount > 0 && agentId === prev.selectedAgentId) {
+          const logTypes = new Set(newMessages.map(m => m.type));
+          addLog(agentId, 'action', `${newMessagesCount} new message${newMessagesCount > 1 ? 's' : ''} (${[...logTypes].join(', ')})`);
+        }
 
         // Add only the new messages to the end
         const updatedMessages = [...currentMessages, ...newMessages];
@@ -192,7 +246,7 @@ export function useCloudAgents(options: UseCloudAgentsOptions = {}): {
       const message = error instanceof Error ? error.message : 'Failed to load conversation';
       setState((prev) => ({ ...prev, error: message, isConversationLoading: false }));
     }
-  }, [apiKey, configId]);
+  }, [apiKey, configId, addLog]);
 
   // Select an agent - fetch conversation and prepare for polling
   const selectAgent = useCallback(async (id: string): Promise<void> => {
@@ -222,9 +276,9 @@ export function useCloudAgents(options: UseCloudAgentsOptions = {}): {
 
     currentAgentIdRef.current = id;
 
-    // Fetch conversation immediately (will set message count)
+    addLog(id, 'info', 'Opening conversation...');
     await loadConversation(id, true);
-  }, [loadConversation]);
+  }, [loadConversation, addLog]);
 
   // Refresh agents list
   const refresh = useCallback(async (): Promise<void> => {
@@ -237,9 +291,10 @@ export function useCloudAgents(options: UseCloudAgentsOptions = {}): {
   // Force refresh conversation
   const refreshConversation = useCallback(async (): Promise<void> => {
     if (state.selectedAgentId) {
+      addLog(state.selectedAgentId, 'info', 'Refreshing conversation...');
       await loadConversation(state.selectedAgentId, true);
     }
-  }, [loadConversation, state.selectedAgentId]);
+  }, [loadConversation, state.selectedAgentId, addLog]);
 
   // Add message to conversation (used when user sends a message)
   const addMessageToConversation = useCallback((agentId: string, message: {
@@ -313,29 +368,55 @@ export function useCloudAgents(options: UseCloudAgentsOptions = {}): {
     }));
   }, []);
 
+  // Clear agent logs
+  const clearAgentLogs = useCallback((): void => {
+    setState((prev) => ({
+      ...prev,
+      agentLogs: []
+    }));
+  }, []);
+
   // Load agents and user info on mount
   useEffect(() => {
     void loadUserInfo();
     void loadAgents();
   }, [configId, apiKey, loadUserInfo, loadAgents]);
 
-  // Polling effect - only when agent is RUNNING
+  // Polling effect - runs when agent status changes to RUNNING
   useEffect(() => {
     if (!state.selectedAgentId || !conversationPollIntervalMs) {
       return;
     }
 
     const agentId = state.selectedAgentId;
-
-    // Check if agent is running
     const agent = state.agents.find(a => a.id === agentId);
-    if (agent?.status !== 'RUNNING') {
+
+    if (!agent) {
       return;
     }
 
-    // Start polling for this agent
-    isPollingRef.current = true;
-    currentAgentIdRef.current = agentId;
+    // Check if agent just became RUNNING
+    const wasRunning = isPollingRef.current && currentAgentIdRef.current === agentId;
+    const isNowRunning = agent.status === 'RUNNING';
+
+    // Start or continue polling
+    if (isNowRunning && !wasRunning) {
+      // Agent just became RUNNING - start polling
+      isPollingRef.current = true;
+      currentAgentIdRef.current = agentId;
+      addLog(agentId, 'success', 'Agent started - watching for updates...');
+    } else if (!isNowRunning && wasRunning) {
+      // Agent stopped - stop polling
+      isPollingRef.current = false;
+      addLog(agentId, 'info', 'Agent stopped');
+    } else if (!isNowRunning) {
+      // Agent not running - don't poll
+      return;
+    }
+
+    if (!isPollingRef.current) {
+      return;
+    }
 
     const pollInterval = conversationPollIntervalMs;
 
@@ -345,7 +426,7 @@ export function useCloudAgents(options: UseCloudAgentsOptions = {}): {
         return;
       }
 
-      // Check if agent is still running
+      // Double-check agent is still running
       let stillRunning = false;
       setState((prev) => {
         const currentAgent = prev.agents.find(a => a.id === agentId);
@@ -360,17 +441,17 @@ export function useCloudAgents(options: UseCloudAgentsOptions = {}): {
         return;
       }
 
-      // Fetch and add only NEW messages (isInitialLoad = false)
+      // Fetch and add only NEW messages
       await loadConversation(agentId, false);
 
-      // Schedule next poll only if still polling
+      // Schedule next poll
       if (isPollingRef.current && currentAgentIdRef.current === agentId) {
         pollTimeoutRef.current = setTimeout(poll, pollInterval);
       }
     };
 
-    // Start polling
-    pollTimeoutRef.current = setTimeout(poll, pollInterval);
+    // Start polling (or restart if was interrupted)
+    pollTimeoutRef.current = setTimeout(poll, 500); // Start with short delay
 
     return () => {
       if (pollTimeoutRef.current) {
@@ -379,9 +460,8 @@ export function useCloudAgents(options: UseCloudAgentsOptions = {}): {
       if (abortControllerRef.current) {
         abortControllerRef.current.abort();
       }
-      isPollingRef.current = false;
     };
-  }, [state.selectedAgentId, state.agents.length, conversationPollIntervalMs, loadConversation]);
+  }, [state.selectedAgentId, state.agents, conversationPollIntervalMs, loadConversation, addLog]);
 
   return {
     state,
@@ -389,6 +469,7 @@ export function useCloudAgents(options: UseCloudAgentsOptions = {}): {
     refresh,
     refreshConversation,
     addMessageToConversation,
-    markAllMessagesRead
+    markAllMessagesRead,
+    clearAgentLogs
   };
 }

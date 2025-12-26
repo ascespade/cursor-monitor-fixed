@@ -395,6 +395,8 @@ export const CloudAgentsDashboard: FC<CloudAgentsDashboardProps> = ({ initialCon
   const [launchFeedback, setLaunchFeedback] = useState<{ type: 'success' | 'error'; message: string } | null>(null);
   const [repoSearchQuery, setRepoSearchQuery] = useState('');
   const [showDeleteConfirm, setShowDeleteConfirm] = useState<string | null>(null);
+  const [showLogsPanel, setShowLogsPanel] = useState(false);
+  const logsEndRef = useRef<HTMLDivElement | null>(null);
   const [debouncedSearchQuery, setDebouncedSearchQuery] = useState('');
 
   // Refs for scroll management
@@ -416,12 +418,13 @@ export const CloudAgentsDashboard: FC<CloudAgentsDashboardProps> = ({ initialCon
     refresh,
     refreshConversation,
     addMessageToConversation,
-    markAllMessagesRead
+    markAllMessagesRead,
+    clearAgentLogs
   } = useCloudAgents({
     configId: primaryConfigId,
     apiKey: primaryApiKey,
     pollIntervalMs: undefined,
-    conversationPollIntervalMs: 5000
+    conversationPollIntervalMs: 3000
   });
 
   const { state: actionsState, launch, stop, remove, followup } = useCloudAgentsActions({
@@ -621,6 +624,13 @@ export const CloudAgentsDashboard: FC<CloudAgentsDashboardProps> = ({ initialCon
   const handleScroll = useCallback(() => {
     checkScrollPosition();
   }, [checkScrollPosition]);
+
+  // Auto-scroll logs when new ones are added
+  useEffect(() => {
+    if (showLogsPanel && logsEndRef.current) {
+      logsEndRef.current.scrollIntoView({ behavior: 'smooth', block: 'start' });
+    }
+  }, [state.agentLogs, showLogsPanel]);
 
   const handleCopyMessage = useCallback((id: string) => {
     setCopiedMessageId(id);
@@ -851,6 +861,19 @@ export const CloudAgentsDashboard: FC<CloudAgentsDashboardProps> = ({ initialCon
           <svg className="w-4 h-4 text-muted-foreground hover:text-foreground" fill="none" stroke="currentColor" viewBox="0 0 24 24">
             <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M8 16H6a2 2 0 01-2-2V6a2 2 0 012-2h8a2 2 0 012 2v2m-6 12h8a2 2 0 002-2v-8a2 2 0 00-2-2h-8a2 2 0 00-2 2v8a2 2 0 002 2z" />
           </svg>
+        </button>
+        <button
+          type="button"
+          onClick={() => setShowLogsPanel(true)}
+          className="p-1.5 hover:bg-card-raised rounded-lg transition-colors relative"
+          title="View agent logs"
+        >
+          <svg className="w-4 h-4 text-muted-foreground hover:text-foreground" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z" />
+          </svg>
+          {state.agentLogs.length > 0 && (
+            <span className="absolute -top-0.5 -right-0.5 w-2 h-2 bg-purple-500 rounded-full" />
+          )}
         </button>
         <div className="relative">
           <button
@@ -1448,6 +1471,100 @@ export const CloudAgentsDashboard: FC<CloudAgentsDashboardProps> = ({ initialCon
           </form>
         </div>
       </section>
+
+      {/* Agent Logs Panel */}
+      {showLogsPanel && (
+        <>
+          <div className="fixed inset-0 bg-black/50 z-40" onClick={() => setShowLogsPanel(false)} />
+          <div className="fixed right-0 top-0 bottom-0 w-80 lg:w-96 bg-card-raised border-l border-border z-50 flex flex-col shadow-2xl">
+            <div className="flex-shrink-0 p-3 border-b border-border flex items-center justify-between">
+              <div className="flex items-center gap-2">
+                <span className="text-xs font-semibold text-foreground">Agent Logs</span>
+                {state.agentLogs.length > 0 && (
+                  <span className="text-[0.65rem] px-1.5 py-0.5 bg-primary/20 text-primary rounded-full">
+                    {state.agentLogs.length}
+                  </span>
+                )}
+              </div>
+              <div className="flex items-center gap-1">
+                <button
+                  type="button"
+                  onClick={clearAgentLogs}
+                  className="p-1.5 hover:bg-card rounded transition-colors"
+                  title="Clear logs"
+                >
+                  <svg className="w-4 h-4 text-muted-foreground" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16" />
+                  </svg>
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setShowLogsPanel(false)}
+                  className="p-1.5 hover:bg-card rounded transition-colors"
+                >
+                  <svg className="w-4 h-4 text-muted-foreground" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
+                  </svg>
+                </button>
+              </div>
+            </div>
+            <div className="flex-1 overflow-y-auto p-3 space-y-2">
+              {state.agentLogs.length === 0 ? (
+                <div className="text-center py-8">
+                  <svg className="w-12 h-12 text-muted-foreground/30 mx-auto mb-3" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z" />
+                  </svg>
+                  <p className="text-sm text-muted-foreground">No logs yet</p>
+                  <p className="text-[0.7rem] text-muted-foreground">Logs will appear here when agent is running</p>
+                </div>
+              ) : (
+                state.agentLogs.map((log) => (
+                  <div
+                    key={log.id}
+                    className={`text-xs p-2 rounded border ${
+                      log.type === 'success' 
+                        ? 'bg-green-950/20 border-green-700/30 text-green-300'
+                        : log.type === 'error'
+                        ? 'bg-red-950/20 border-red-700/30 text-red-300'
+                        : log.type === 'action'
+                        ? 'bg-purple-950/20 border-purple-700/30 text-purple-300'
+                        : 'bg-card border-border text-muted-foreground'
+                    }`}
+                  >
+                    <div className="flex items-center gap-1.5 mb-1">
+                      {log.type === 'success' && (
+                        <svg className="w-3 h-3 text-green-400" fill="currentColor" viewBox="0 0 20 20">
+                          <path fillRule="evenodd" d="M10 18a8 8 0 100-16 8 8 0 000 16zm3.707-9.293a1 1 0 00-1.414-1.414L9 10.586 7.707 9.293a1 1 0 00-1.414 1.414l2 2a1 1 0 001.414 0l4-4z" clipRule="evenodd" />
+                        </svg>
+                      )}
+                      {log.type === 'error' && (
+                        <svg className="w-3 h-3 text-red-400" fill="currentColor" viewBox="0 0 20 20">
+                          <path fillRule="evenodd" d="M10 18a8 8 0 100-16 8 8 0 000 16zM8.707 7.293a1 1 0 00-1.414 1.414L8.586 10l-1.293 1.293a1 1 0 101.414 1.414L10 11.414l1.293 1.293a1 1 0 001.414-1.414L11.414 10l1.293-1.293a1 1 0 00-1.414-1.414L10 8.586 8.707 7.293z" clipRule="evenodd" />
+                        </svg>
+                      )}
+                      {log.type === 'action' && (
+                        <svg className="w-3 h-3 text-purple-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M13 10V3L4 14h7v7l9-11h-7z" />
+                        </svg>
+                      )}
+                      {log.type === 'info' && (
+                        <svg className="w-3 h-3 text-blue-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M13 16h-1v-4h-1m1-4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
+                        </svg>
+                      )}
+                      <span className="text-[0.6rem] opacity-60">
+                        {new Date(log.timestamp).toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit', second: '2-digit' })}
+                      </span>
+                    </div>
+                    <p>{log.message}</p>
+                  </div>
+                ))
+              )}
+              <div ref={logsEndRef} />
+            </div>
+          </div>
+        </>
+      )}
 
       {/* Delete Confirmation Dialog */}
       {showDeleteConfirm && (
