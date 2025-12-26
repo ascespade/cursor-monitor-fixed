@@ -1,0 +1,94 @@
+# Docker Compose for Chatwoot-style Self-hostable SaaS
+# Local development and production deployment
+
+# Production Docker Compose
+# For development, use: docker-compose -f docker-compose.dev.yml up
+
+version: '3.8'
+
+services:
+  # Next.js App (UI + API routes)
+  app:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      args:
+        - NEXT_PUBLIC_SUPABASE_URL=${NEXT_PUBLIC_SUPABASE_URL}
+        - NEXT_PUBLIC_SUPABASE_ANON_KEY=${NEXT_PUBLIC_SUPABASE_ANON_KEY}
+    container_name: cursor-monitor-app
+    network_mode: host
+    # ports:
+    #   - "3000:3000"  # Not needed with host network
+    environment:
+      # Supabase (required)
+      - NEXT_PUBLIC_SUPABASE_URL=${NEXT_PUBLIC_SUPABASE_URL}
+      - NEXT_PUBLIC_SUPABASE_ANON_KEY=${NEXT_PUBLIC_SUPABASE_ANON_KEY}
+      - SUPABASE_SERVICE_ROLE_KEY=${SUPABASE_SERVICE_ROLE_KEY}
+      # Cursor API (required)
+      - CURSOR_API_KEY=${CURSOR_API_KEY}
+      # Redis (optional - leave unset to use database-only mode)
+      - REDIS_HOST=${REDIS_HOST:-}
+      - REDIS_PORT=${REDIS_PORT:-6379}
+      - REDIS_PASSWORD=${REDIS_PASSWORD:-}
+      # Node environment
+      - NODE_ENV=production
+    env_file:
+      - .env
+    restart: unless-stopped
+    depends_on:
+      - worker
+    dns:
+      - 1.1.1.1
+      - 8.8.8.8
+
+  # Orchestrator Worker (background processing)
+  worker:
+    build:
+      context: .
+      dockerfile: orchestrator/Dockerfile
+    container_name: cursor-monitor-worker
+    network_mode: host
+    environment:
+      # Supabase (required)
+      - SUPABASE_URL=${NEXT_PUBLIC_SUPABASE_URL}
+      - NEXT_PUBLIC_SUPABASE_URL=${NEXT_PUBLIC_SUPABASE_URL}
+      - SUPABASE_SERVICE_ROLE_KEY=${SUPABASE_SERVICE_ROLE_KEY}
+      - SUPABASE_SERVICE_KEY=${SUPABASE_SERVICE_ROLE_KEY}
+      # Cursor API (required)
+      - CURSOR_API_KEY=${CURSOR_API_KEY}
+      # Redis (optional - leave unset to use database-only mode)
+      - REDIS_HOST=${REDIS_HOST:-}
+      - REDIS_PORT=${REDIS_PORT:-6379}
+      - REDIS_PASSWORD=${REDIS_PASSWORD:-}
+      # Worker configuration
+      - MAX_ITERATIONS=${MAX_ITERATIONS:-20}
+      - QUALITY_THRESHOLD=${QUALITY_THRESHOLD:-70}
+      # Node environment
+      - NODE_ENV=production
+    env_file:
+      - .env
+    restart: unless-stopped
+    dns:
+      - 1.1.1.1
+      - 8.8.8.8
+
+  # Redis (optional - only if REDIS_HOST is set)
+  # Uncomment if you want to run Redis locally
+  # redis:
+  #   image: redis:7-alpine
+  #   container_name: cursor-monitor-redis
+  #   ports:
+  #     - "6379:6379"
+  #   command: redis-server --appendonly yes
+  #   volumes:
+  #     - redis-data:/data
+  #   restart: unless-stopped
+  #   networks:
+  #     - cursor-monitor-network
+
+networks:
+  cursor-monitor-network:
+    driver: bridge
+
+# volumes:
+#   redis-data:

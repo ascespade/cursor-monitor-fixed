@@ -1,0 +1,8 @@
+[
+  {
+    "id": "default",
+    "name": "Personal Cursor API",
+    "description": "Example Cursor Cloud Agents API key configuration.",
+    "apiKey": "YOUR_CURSOR_API_KEY_HERE"
+  }
+]

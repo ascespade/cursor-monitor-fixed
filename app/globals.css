@@ -1,0 +1,374 @@
+/*
+ * Global Stylesheet for App Router
+ *
+ * Purpose:
+ * - Define project-wide base styles and integrate Tailwind CSS utilities.
+ * - Establish the default color scheme and typography with burgundy theme.
+ * - Inspired by modern design systems with CSS variables for theming.
+ *
+ * Notes:
+ * - Keep this file limited to truly global concerns; prefer component-level styles otherwise.
+ */
+
+/* Fonts */
+@import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&display=swap');
+@import url('https://fonts.googleapis.com/css2?family=Cairo:wght@300;400;500;600;700;800&display=swap');
+@import url('https://fonts.googleapis.com/css2?family=Tajawal:wght@300;400;500;700;800&display=swap');
+@import url('https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;600&display=swap');
+
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+  :root {
+    color-scheme: dark;
+    
+    /* Core Background Colors - Bitaqaty Dark Theme */
+    --color-background: #0E0B16; /* Deep purple/black background */
+    --color-foreground: #E0E0E0; /* Off-white for excellent readability */
+    --color-border: #211D2B; /* Dark gray/purple for borders and dividers */
+    --color-input: #211D2B; /* Dark gray/purple for inputs */
+    --color-ring: #FFC107; /* Vibrant yellow for focus rings */
+
+    /* Card and Surface Colors */
+    --color-card: #211D2B; /* Slightly lighter than background for cards */
+    --color-card-foreground: #E0E0E0; /* Off-white text on cards */
+    --color-card-raised: #2A2535; /* Raised surfaces (slightly lighter) */
+    --color-popover: #211D2B; /* Dark gray/purple popovers */
+    --color-popover-foreground: #E0E0E0; /* Off-white text */
+
+    /* Muted Colors */
+    --color-muted: #211D2B; /* Dark gray/purple for backgrounds */
+    --color-muted-foreground: #9E9E9E; /* Muted gray for secondary text */
+
+    /* Primary Colors - Vibrant Yellow (CTA/Accent) */
+    --color-primary: #FFC107; /* Vibrant yellow/gold for CTAs */
+    --color-primary-foreground: #0E0B16; /* Dark text on yellow for contrast */
+    --color-primary-hover: #FFD54F; /* Lighter yellow for hover */
+    --color-primary-dark: #F9A825; /* Darker yellow for active states */
+    --color-primary-light: #FFF59D; /* Very light yellow for subtle backgrounds */
+    --color-primary-lighter: #FFFDE7; /* Lightest yellow for very subtle backgrounds */
+    --color-primary-gradient: linear-gradient(135deg, #FFC107 0%, #FFD54F 100%);
+
+    /* Secondary Colors - Deep Purple/Black */
+    --color-secondary: #211D2B; /* Dark gray/purple secondary color */
+    --color-secondary-foreground: #E0E0E0; /* Off-white text on secondary */
+
+    /* Destructive Colors */
+    --color-destructive: #EF5350; /* Soft red for critical alerts */
+    --color-destructive-foreground: #FFFFFF; /* White - High contrast */
+
+    /* Accent Colors - Yellow for actions */
+    --color-accent: #FFC107; /* Vibrant yellow for accent elements */
+    --color-accent-foreground: #0E0B16; /* Dark text on yellow */
+    --color-accent-green: #10b981; /* Green accent */
+    --color-accent-blue: #3b82f6; /* Blue accent */
+
+    /* Success Colors */
+    --color-success: #10b981; /* Green 500 for success states */
+    --color-success-foreground: #FFFFFF; /* White - High contrast */
+
+    /* Warning Colors */
+    --color-warning: #FFC107; /* Yellow for warnings */
+    --color-warning-foreground: #0E0B16; /* Dark text */
+
+    /* Error Colors */
+    --color-error: #EF5350; /* Soft red for errors */
+    --color-error-foreground: #FFFFFF; /* White - High contrast */
+
+    /* Border Radius */
+    --radius: 8px;
+  }
+
+  * {
+    box-sizing: border-box;
+    line-height: normal;
+    font-family: inherit;
+    margin: unset;
+    border-color: var(--color-border);
+  }
+
+  body {
+    margin: 0;
+    padding: 0;
+    background-color: var(--color-background);
+    color: var(--color-foreground);
+    font-family: 'Inter', 'Cairo', 'Tajawal', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+    font-feature-settings: 'kern' 1, 'liga' 1, 'calt' 1;
+    -webkit-font-smoothing: antialiased;
+    -moz-osx-font-smoothing: grayscale;
+    text-rendering: optimizeLegibility;
+    font-variant-ligatures: common-ligatures;
+    position: relative;
+  }
+
+  body::before {
+    content: '';
+    position: fixed;
+    top: 0;
+    left: 0;
+    width: 100%;
+    height: 100%;
+    background-image: 
+      url("data:image/svg+xml,%3Csvg width='160' height='160' xmlns='http://www.w3.org/2000/svg'%3E%3Cdefs%3E%3Cpattern id='gaming-bg' x='0' y='0' width='160' height='160' patternUnits='userSpaceOnUse'%3E%3Cg fill='none' stroke='%23D946EF' stroke-width='1' opacity='0.3'%3E%3Cpath d='M20 20 L50 20 L50 50 L20 50 Z M55 15 L75 15 L75 35 L55 35 Z'/%3E%3Ccircle cx='90' cy='25' r='10'/%3E%3Cpath d='M110 10 L140 10 L140 40 L110 40 Z'/%3E%3Cpath d='M15 65 L15 85 L25 85 L25 95 L15 95'/%3E%3Cpath d='M40 70 L60 70 L60 85 L50 85 L50 95'/%3E%3Ccircle cx='80' cy='75' r='8'/%3E%3Cpath d='M100 65 L120 65 L120 85 L100 85 M110 65 L110 85'/%3E%3Cpath d='M20 105 L35 105 L35 125 L20 125 M27.5 105 L27.5 125'/%3E%3Cpath d='M45 100 L60 100 L60 120 L45 120 M52.5 100 L52.5 120'/%3E%3Ccircle cx='75' cy='110' r='9'/%3E%3Cpath d='M95 100 L115 100 L110 115 L95 115 Z'/%3E%3Cpath d='M25 135 L45 135 L45 145 L30 145 L30 140'/%3E%3Ccircle cx='65' cy='140' r='6'/%3E%3Cpath d='M85 130 L105 130 L105 150 L85 150'/%3E%3Cpath d='M115 105 L135 105 L135 125 L115 125'/%3E%3Cpath d='M125 115 L135 115 M130 110 L130 120'/%3E%3C/g%3E%3C/pattern%3E%3C/defs%3E%3Crect width='160' height='160' fill='url(%23gaming-bg)'/%3E%3C/svg%3E");
+    background-repeat: repeat;
+    background-size: 160px 160px;
+    pointer-events: none;
+    z-index: 0;
+    opacity: 1;
+  }
+
+  /* Typography Enhancements */
+  h1, h2, h3, h4, h5, h6 {
+    font-family: 'Inter', 'Cairo', 'Tajawal', sans-serif;
+    font-weight: 700;
+    letter-spacing: -0.02em;
+    line-height: 1.2;
+  }
+
+  p, span, div, a {
+    font-family: 'Inter', 'Cairo', 'Tajawal', sans-serif;
+    letter-spacing: 0;
+  }
+
+  /* Custom scrollbar - Bitaqaty theme */
+  ::-webkit-scrollbar {
+    width: 10px;
+    height: 10px;
+  }
+
+  ::-webkit-scrollbar-track {
+    background: var(--color-muted);
+    border-radius: 5px;
+  }
+
+  ::-webkit-scrollbar-thumb {
+    background: var(--color-border);
+    border-radius: 5px;
+    border: 2px solid var(--color-muted);
+  }
+
+  ::-webkit-scrollbar-thumb:hover {
+    background: var(--color-primary);
+  }
+}
+
+@layer components {
+  /* Animation utilities for micro-interactions */
+  .animate-scale-in {
+    animation: scaleIn 150ms ease-out;
+  }
+
+  .animate-pulse-glow {
+    animation: pulseGlow 2s ease-in-out infinite;
+  }
+
+  .animate-shimmer {
+    animation: shimmer 1.5s ease-in-out infinite;
+  }
+
+  .animate-spring-in {
+    animation: springIn 300ms cubic-bezier(0.68, -0.55, 0.265, 1.55);
+  }
+
+  /* Focus ring for accessibility */
+  .focus-ring {
+    @apply focus:outline-none focus:ring-2 focus:ring-ring focus:ring-offset-2 focus:ring-offset-background;
+  }
+
+  /* Hover states for interactive elements */
+  .hover-lift {
+    @apply transition-transform duration-200 ease-out hover:scale-[0.98];
+  }
+  
+  .hover-glow {
+    @apply transition-all duration-200 ease-out hover:shadow-lg;
+  }
+
+  /* Common Layout Utilities */
+  .container-padding {
+    @apply px-4 sm:px-6 lg:px-8;
+  }
+
+  .section-padding {
+    @apply py-8 md:py-12 lg:py-16;
+  }
+
+  /* Card Styles */
+  .card {
+    @apply bg-card text-card-foreground rounded-lg shadow-md p-6;
+  }
+
+  .card-hover {
+    @apply card transition-smooth hover-lift hover-glow;
+  }
+
+  /* Form Styles */
+  .form-input {
+    @apply w-full px-3 py-2 border border-border rounded-md 
+           focus:outline-none focus:ring-2 focus:ring-ring focus:ring-offset-2
+           bg-input text-foreground;
+  }
+
+  .form-label {
+    @apply block text-sm font-medium text-foreground mb-2;
+  }
+
+  .form-error {
+    @apply mt-1 text-sm text-destructive;
+  }
+
+  .form-success {
+    @apply mt-1 text-sm text-success;
+  }
+
+  /* Button Styles */
+  .btn-primary {
+    @apply px-6 py-2 bg-primary text-primary-foreground rounded-md 
+           hover:bg-primary-hover focus:outline-none focus:ring-2 focus:ring-ring
+           disabled:opacity-50 disabled:cursor-not-allowed transition-smooth;
+  }
+
+  .btn-secondary {
+    @apply px-6 py-2 bg-secondary text-secondary-foreground rounded-md 
+           hover:opacity-80 focus:outline-none focus:ring-2 focus:ring-ring
+           disabled:opacity-50 disabled:cursor-not-allowed transition-smooth;
+  }
+
+  .btn-outline {
+    @apply px-6 py-2 border border-border rounded-md 
+           hover:bg-muted focus:outline-none focus:ring-2 focus:ring-ring
+           disabled:opacity-50 disabled:cursor-not-allowed transition-smooth;
+  }
+
+  /* Alert Styles */
+  .alert {
+    @apply p-4 rounded-lg border;
+  }
+
+  .alert-error {
+    @apply alert border-destructive text-destructive;
+    background-color: rgba(216, 124, 124, 0.1);
+  }
+
+  .alert-success {
+    @apply alert border-success text-success;
+    background-color: rgba(16, 185, 129, 0.1);
+  }
+
+  .alert-warning {
+    @apply alert border-warning text-warning-foreground;
+    background-color: rgba(245, 158, 11, 0.1);
+  }
+
+  .alert-info {
+    @apply alert border-accent-foreground text-accent-foreground;
+    background-color: rgba(166, 52, 71, 0.1);
+  }
+
+  /* Typography Utilities */
+  .text-gradient {
+    background: var(--color-primary-gradient);
+    -webkit-background-clip: text;
+    -webkit-text-fill-color: transparent;
+    background-clip: text;
+  }
+
+  /* Layout Utilities */
+  .page-container {
+    @apply min-h-screen flex flex-col bg-background;
+  }
+
+  .page-content {
+    @apply flex-1 container-padding section-padding;
+  }
+
+  /* Pattern background with purple gaming icons */
+  .pattern-bg {
+    position: relative;
+    background-image: 
+      url("data:image/svg+xml,%3Csvg width='160' height='160' xmlns='http://www.w3.org/2000/svg'%3E%3Cdefs%3E%3Cpattern id='gaming-pattern-bg' x='0' y='0' width='160' height='160' patternUnits='userSpaceOnUse'%3E%3Cg fill='none' stroke='%23D946EF' stroke-width='1' opacity='0.25'%3E%3Cpath d='M20 20 L50 20 L50 50 L20 50 Z M55 15 L75 15 L75 35 L55 35 Z'/%3E%3Ccircle cx='90' cy='25' r='10'/%3E%3Cpath d='M110 10 L140 10 L140 40 L110 40 Z'/%3E%3Cpath d='M15 65 L15 85 L25 85 L25 95 L15 95'/%3E%3Cpath d='M40 70 L60 70 L60 85 L50 85 L50 95'/%3E%3Ccircle cx='80' cy='75' r='8'/%3E%3Cpath d='M100 65 L120 65 L120 85 L100 85 M110 65 L110 85'/%3E%3Cpath d='M20 105 L35 105 L35 125 L20 125 M27.5 105 L27.5 125'/%3E%3Cpath d='M45 100 L60 100 L60 120 L45 120 M52.5 100 L52.5 120'/%3E%3Ccircle cx='75' cy='110' r='9'/%3E%3Cpath d='M95 100 L115 100 L110 115 L95 115 Z'/%3E%3Cpath d='M25 135 L45 135 L45 145 L30 145 L30 140'/%3E%3Ccircle cx='65' cy='140' r='6'/%3E%3Cpath d='M85 130 L105 130 L105 150 L85 150'/%3E%3Cpath d='M115 105 L135 105 L135 125 L115 125'/%3E%3Cpath d='M125 115 L135 115 M130 110 L130 120'/%3E%3C/g%3E%3C/pattern%3E%3C/defs%3E%3Crect width='160' height='160' fill='url(%23gaming-pattern-bg)'/%3E%3C/svg%3E");
+    background-repeat: repeat;
+    background-size: 160px 160px;
+  }
+
+  .pattern-bg::before {
+    content: '';
+    position: absolute;
+    top: 0;
+    left: 0;
+    right: 0;
+    bottom: 0;
+    background: linear-gradient(135deg, rgba(217, 70, 239, 0.02) 0%, rgba(139, 92, 246, 0.02) 50%, rgba(217, 70, 239, 0.02) 100%);
+    pointer-events: none;
+    z-index: 0;
+  }
+
+  .pattern-bg > * {
+    position: relative;
+    z-index: 1;
+  }
+}
+
+@layer utilities {
+  .text-balance {
+    text-wrap: balance;
+  }
+
+  /* Smooth transitions */
+  .transition-smooth {
+    transition: all 0.3s cubic-bezier(0.4, 0, 0.2, 1);
+  }
+
+  /* Touch optimization for mobile */
+  .touch-manipulation {
+    touch-action: manipulation;
+    -webkit-tap-highlight-color: transparent;
+  }
+}
+
+@keyframes scaleIn {
+  from {
+    transform: scale(0.98);
+    opacity: 0.8;
+  }
+  to {
+    transform: scale(1);
+    opacity: 1;
+  }
+}
+
+@keyframes pulseGlow {
+  0%, 100% {
+    opacity: 1;
+  }
+  50% {
+    opacity: 0.6;
+  }
+}
+
+@keyframes shimmer {
+  0% {
+    background-position: -200px 0;
+  }
+  100% {
+    background-position: calc(200px + 100%) 0;
+  }
+}
+
+@keyframes springIn {
+  0% {
+    transform: scale(0);
+  }
+  100% {
+    transform: scale(1);
+  }
+}
+
+@keyframes ping {
+  75%, 100% {
+    transform: scale(2);
+    opacity: 0;
+  }
+}

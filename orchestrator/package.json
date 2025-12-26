@@ -1,0 +1,35 @@
+{
+  "name": "cursor-monitor-orchestrator",
+  "version": "1.0.0",
+  "description": "Autonomous Cursor Orchestrator - Local Server Edition",
+  "main": "src/workers/orchestrator-worker.ts",
+  "scripts": {
+    "dev": "tsx watch src/workers/orchestrator-worker.ts",
+    "worker": "tsx src/workers/orchestrator-worker.ts",
+    "cron": "tsx src/cron/check-stuck-agents.ts",
+    "settings-server": "tsx src/server/settings-server.ts",
+    "type-check": "tsc --noEmit",
+    "fix-orchestrations": "tsx src/scripts/fix-old-orchestrations.ts",
+    "fix-all-orchestrations": "tsx src/scripts/fix-all-orchestrations.ts",
+    "fix-and-retry-orchestration": "tsx src/scripts/fix-and-retry-orchestration.ts",
+    "cleanup-orchestrations": "tsx src/scripts/cleanup-orchestrations.ts"
+  },
+  "dependencies": {
+    "@supabase/supabase-js": "^2.48.0",
+    "@types/cors": "2.8.19",
+    "@types/express": "5.0.6",
+    "bullmq": "^5.3.0",
+    "cors": "2.8.5",
+    "dotenv": "^16.4.5",
+    "express": "4.22.1",
+    "ioredis": "^5.3.2"
+  },
+  "devDependencies": {
+    "@types/node": "^20.14.10",
+    "tsx": "^4.16.2",
+    "typescript": "^5.5.4"
+  },
+  "engines": {
+    "node": ">=20.0.0"
+  }
+}

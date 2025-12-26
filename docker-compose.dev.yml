@@ -1,0 +1,85 @@
+# Docker Compose for Development (Hot Reload)
+# Local development with instant code reflection
+
+version: '3.8'
+
+services:
+  # Next.js App (Development Mode)
+  app:
+    build:
+      context: .
+      dockerfile: Dockerfile.dev
+    image: cursor-monitor-app-dev:latest
+    container_name: cursor-monitor-app-dev
+    network_mode: host
+    volumes:
+      # Mount project root for live code updates (CRITICAL: must be first)
+      - .:/app
+      # Isolate node_modules to prevent conflicts (anonymous volume)
+      - /app/node_modules
+      # Isolate .next to prevent cache issues (anonymous volume)
+      - /app/.next
+    # Ensure we're using dev command (override any CMD)
+    command: npm run dev
+    environment:
+      # Supabase (required)
+      - NEXT_PUBLIC_SUPABASE_URL=${NEXT_PUBLIC_SUPABASE_URL}
+      - NEXT_PUBLIC_SUPABASE_ANON_KEY=${NEXT_PUBLIC_SUPABASE_ANON_KEY}
+      - SUPABASE_SERVICE_ROLE_KEY=${SUPABASE_SERVICE_ROLE_KEY}
+      # Cursor API (required)
+      - CURSOR_API_KEY=${CURSOR_API_KEY}
+      # GitHub Token (optional)
+      - GITHUB_TOKEN=${GITHUB_TOKEN:-}
+      - NEXT_PUBLIC_GITHUB_TOKEN=${GITHUB_TOKEN:-}
+      # Redis (optional - leave unset to use database-only mode)
+      - REDIS_HOST=${REDIS_HOST:-}
+      - REDIS_PORT=${REDIS_PORT:-6379}
+      - REDIS_PASSWORD=${REDIS_PASSWORD:-}
+      # Node environment - MUST be development
+      - NODE_ENV=development
+      # Next.js dev server settings
+      - WATCHPACK_POLLING=true
+      - CHOKIDAR_USEPOLLING=true
+    env_file:
+      - .env
+    restart: unless-stopped
+    stdin_open: true
+    tty: true
+    dns:
+      - 1.1.1.1
+      - 8.8.8.8
+
+  # Orchestrator Worker (can run in production mode for background tasks)
+  worker:
+    build:
+      context: .
+      dockerfile: orchestrator/Dockerfile
+    container_name: cursor-monitor-worker-dev
+    network_mode: host
+    environment:
+      # Supabase (required)
+      - SUPABASE_URL=${NEXT_PUBLIC_SUPABASE_URL}
+      - NEXT_PUBLIC_SUPABASE_URL=${NEXT_PUBLIC_SUPABASE_URL}
+      - SUPABASE_SERVICE_ROLE_KEY=${SUPABASE_SERVICE_ROLE_KEY}
+      - SUPABASE_SERVICE_KEY=${SUPABASE_SERVICE_ROLE_KEY}
+      # Cursor API (required)
+      - CURSOR_API_KEY=${CURSOR_API_KEY}
+      # Redis (optional - leave unset to use database-only mode)
+      - REDIS_HOST=${REDIS_HOST:-}
+      - REDIS_PORT=${REDIS_PORT:-6379}
+      - REDIS_PASSWORD=${REDIS_PASSWORD:-}
+      # Worker configuration
+      - MAX_ITERATIONS=${MAX_ITERATIONS:-20}
+      - QUALITY_THRESHOLD=${QUALITY_THRESHOLD:-70}
+      # Node environment
+      - NODE_ENV=production
+    env_file:
+      - .env
+    restart: unless-stopped
+    dns:
+      - 1.1.1.1
+      - 8.8.8.8
+
+networks:
+  cursor-monitor-network:
+    driver: bridge

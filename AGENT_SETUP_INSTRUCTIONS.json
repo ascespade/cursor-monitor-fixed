@@ -1,0 +1,590 @@
+{
+  "title": "Complete Setup Instructions for Self-Hostable SaaS with Docker, SSH, and Tailscale",
+  "description": "Step-by-step guide for setting up the Chatwoot-style self-hostable SaaS architecture, including Docker containers, SSH server, and Tailscale VPN configuration",
+  "version": "1.0.0",
+  "created": "2025-12-20",
+  "environment": {
+    "os": "Linux (Ubuntu/Debian)",
+    "shell": "bash",
+    "workspace_path": "/workspace",
+    "note": "This guide assumes you have sudo access with root password"
+  },
+  "prerequisites": {
+    "system_requirements": [
+      "Linux system (Ubuntu 20.04+ or Debian 11+)",
+      "sudo access with root password",
+      "Internet connection",
+      "At least 2GB RAM",
+      "At least 10GB disk space"
+    ],
+    "required_credentials": {
+      "supabase": {
+        "NEXT_PUBLIC_SUPABASE_URL": "Your Supabase project URL (e.g., https://xxx.supabase.co)",
+        "NEXT_PUBLIC_SUPABASE_ANON_KEY": "Your Supabase anonymous key",
+        "SUPABASE_SERVICE_ROLE_KEY": "Your Supabase service role key"
+      },
+      "cursor_api": {
+        "CURSOR_API_KEY": "Your Cursor API key"
+      },
+      "redis": {
+        "REDIS_HOST": "Optional - Redis host IP (e.g., 100.98.212.73 for Tailscale)",
+        "REDIS_PORT": "Optional - Redis port (default: 6379)",
+        "REDIS_PASSWORD": "Optional - Redis password"
+      },
+      "tailscale": {
+        "TAILSCALE_AUTH_KEY": "Your Tailscale auth key (from https://login.tailscale.com/admin/settings/keys)"
+      }
+    }
+  },
+  "setup_steps": {
+    "step_1_install_docker": {
+      "title": "Install Docker and Docker Compose",
+      "description": "Install Docker daemon and Docker Compose for container management",
+      "commands": [
+        {
+          "step": "1.1",
+          "description": "Update package list",
+          "command": "sudo apt-get update",
+          "expected_output": "Package lists updated"
+        },
+        {
+          "step": "1.2",
+          "description": "Install containerd (required for Docker)",
+          "command": "sudo apt-get install -y containerd",
+          "expected_output": "containerd installed successfully"
+        },
+        {
+          "step": "1.3",
+          "description": "Download static Docker client binary",
+          "command": "curl -fsSL https://download.docker.com/linux/static/stable/x86_64/docker-24.0.7.tgz -o /tmp/docker.tgz && tar -xzf /tmp/docker.tgz -C /tmp && sudo cp /tmp/docker/docker /usr/local/bin/ && sudo chmod +x /usr/local/bin/docker",
+          "expected_output": "Docker binary installed"
+        },
+        {
+          "step": "1.4",
+          "description": "Download Docker Compose binary",
+          "command": "curl -L \"https://github.com/docker/compose/releases/latest/download/docker-compose-$(uname -s)-$(uname -m)\" -o /tmp/docker-compose && sudo mv /tmp/docker-compose /tmp/docker-compose && sudo chmod +x /tmp/docker-compose",
+          "expected_output": "Docker Compose binary installed"
+        },
+        {
+          "step": "1.5",
+          "description": "Start Docker daemon",
+          "command": "sudo dockerd > /tmp/dockerd.log 2>&1 &",
+          "expected_output": "Docker daemon started in background",
+          "note": "Check logs with: tail -f /tmp/dockerd.log"
+        },
+        {
+          "step": "1.6",
+          "description": "Verify Docker installation",
+          "command": "sleep 3 && docker --version && /tmp/docker-compose --version",
+          "expected_output": "Docker version 24.0.7, Docker Compose version v2.x.x"
+        }
+      ],
+      "troubleshooting": {
+        "docker_daemon_not_running": {
+          "symptom": "Cannot connect to the Docker daemon",
+          "solution": "Run: sudo dockerd > /tmp/dockerd.log 2>&1 &",
+          "verify": "docker ps"
+        },
+        "containerd_missing": {
+          "symptom": "failed to start containerd: exec: \"containerd\": executable file not found",
+          "solution": "Install containerd: sudo apt-get install -y containerd"
+        }
+      }
+    },
+    "step_2_configure_environment": {
+      "title": "Configure Environment Variables",
+      "description": "Create .env file with all required credentials",
+      "commands": [
+        {
+          "step": "2.1",
+          "description": "Navigate to workspace",
+          "command": "cd /workspace"
+        },
+        {
+          "step": "2.2",
+          "description": "Create .env file from template",
+          "command": "cat > .env << 'EOF'\n# Environment Variables for Chatwoot-style Self-hostable SaaS\n\n# ============================================================================\n# SUPABASE (Required)\n# ============================================================================\nNEXT_PUBLIC_SUPABASE_URL=https://your-project.supabase.co\nNEXT_PUBLIC_SUPABASE_ANON_KEY=your-anon-key\nSUPABASE_SERVICE_ROLE_KEY=your-service-role-key\n\n# ============================================================================\n# CURSOR API (Required)\n# ============================================================================\nCURSOR_API_KEY=your-cursor-api-key\n\n# ============================================================================\n# REDIS (Optional - but configured)\n# ============================================================================\nREDIS_HOST=100.98.212.73\nREDIS_PORT=6379\nREDIS_PASSWORD=your-redis-password\n\n# ============================================================================\n# WORKER CONFIGURATION (Optional)\n# ============================================================================\nMAX_ITERATIONS=20\nQUALITY_THRESHOLD=70\n\n# ============================================================================\n# WEBHOOK (Optional)\n# ============================================================================\nWEBHOOK_SECRET=your-webhook-secret\n\n# ============================================================================\n# NODE ENVIRONMENT\n# ============================================================================\nNODE_ENV=production\nEOF",
+          "note": "Replace all placeholder values with your actual credentials"
+        },
+        {
+          "step": "2.3",
+          "description": "Verify .env file exists",
+          "command": "ls -la .env && echo '✅ .env file created'"
+        }
+      ],
+      "important_notes": [
+        "NEXT_PUBLIC_* variables are embedded at build time, so they must be set before building containers",
+        "Never commit .env file to git (it should be in .gitignore)",
+        "Use real credentials from your Supabase project settings"
+      ]
+    },
+    "step_3_setup_database": {
+      "title": "Initialize Supabase Database Schema",
+      "description": "Run the database schema to create all required tables",
+      "commands": [
+        {
+          "step": "3.1",
+          "description": "Locate schema file",
+          "command": "ls -la supabase-schema.sql || ls -la orchestrator/supabase-schema.sql"
+        },
+        {
+          "step": "3.2",
+          "description": "Execute schema in Supabase",
+          "command": "echo 'Go to Supabase Dashboard > SQL Editor and run the contents of supabase-schema.sql'",
+          "note": "Or use Supabase CLI: supabase db push"
+        }
+      ],
+      "required_tables": [
+        "orchestrations",
+        "orchestration_events",
+        "orchestration_tasks",
+        "orchestration_outbox_jobs",
+        "service_health_events",
+        "agent_orchestrator_states",
+        "rate_limits"
+      ]
+    },
+    "step_4_build_containers": {
+      "title": "Build Docker Containers",
+      "description": "Build both app and worker containers with proper build arguments",
+      "commands": [
+        {
+          "step": "4.1",
+          "description": "Stop any running containers",
+          "command": "/tmp/docker-compose stop || true"
+        },
+        {
+          "step": "4.2",
+          "description": "Build app container (with NEXT_PUBLIC_* build args)",
+          "command": "/tmp/docker-compose build --no-cache app",
+          "expected_output": "Successfully built workspace-app:latest",
+          "note": "This step embeds NEXT_PUBLIC_SUPABASE_URL and NEXT_PUBLIC_SUPABASE_ANON_KEY into the Next.js bundle"
+        },
+        {
+          "step": "4.3",
+          "description": "Build worker container",
+          "command": "/tmp/docker-compose build --no-cache worker",
+          "expected_output": "Successfully built workspace-worker:latest"
+        },
+        {
+          "step": "4.4",
+          "description": "Verify images were created",
+          "command": "docker images | grep workspace",
+          "expected_output": "Should show workspace-app and workspace-worker images"
+        }
+      ],
+      "important_notes": [
+        "The --no-cache flag ensures a fresh build with latest environment variables",
+        "Build time can take 5-10 minutes depending on system resources",
+        "NEXT_PUBLIC_* variables MUST be available during build (via docker-compose.yml build.args)"
+      ]
+    },
+    "step_5_start_containers": {
+      "title": "Start Containers",
+      "description": "Start both app and worker containers",
+      "commands": [
+        {
+          "step": "5.1",
+          "description": "Start all services",
+          "command": "/tmp/docker-compose up -d",
+          "expected_output": "Container cursor-monitor-app Started, Container cursor-monitor-worker Started"
+        },
+        {
+          "step": "5.2",
+          "description": "Check container status",
+          "command": "/tmp/docker-compose ps",
+          "expected_output": "Both containers should show 'Up' status"
+        },
+        {
+          "step": "5.3",
+          "description": "View app logs",
+          "command": "/tmp/docker-compose logs app --tail 20",
+          "expected_output": "Should show 'Ready in XXms' message"
+        },
+        {
+          "step": "5.4",
+          "description": "View worker logs",
+          "command": "/tmp/docker-compose logs worker --tail 20",
+          "expected_output": "Should show worker initialization and heartbeat messages"
+        }
+      ],
+      "network_configuration": {
+        "network_mode": "host",
+        "reason": "Allows containers to access external services (Supabase, Redis on Tailscale) directly",
+        "note": "Port mapping (3000:3000) is not needed with host network mode"
+      }
+    },
+    "step_6_verify_setup": {
+      "title": "Verify Setup",
+      "description": "Test that everything is working correctly",
+      "commands": [
+        {
+          "step": "6.1",
+          "description": "Test API endpoint",
+          "command": "curl -s http://localhost:3000/api/cloud-agents/orchestrations | jq -r '.success'",
+          "expected_output": "true"
+        },
+        {
+          "step": "6.2",
+          "description": "Check worker heartbeats in database",
+          "command": "echo 'Check Supabase dashboard for worker_heartbeats table entries'"
+        },
+        {
+          "step": "6.3",
+          "description": "Test app accessibility",
+          "command": "curl -s http://localhost:3000 | head -20",
+          "expected_output": "Should return HTML content"
+        }
+      ]
+    },
+    "step_7_install_ssh_server": {
+      "title": "Install and Configure SSH Server",
+      "description": "Set up SSH server for remote access",
+      "commands": [
+        {
+          "step": "7.1",
+          "description": "Install OpenSSH server",
+          "command": "sudo apt-get update && sudo apt-get install -y openssh-server",
+          "expected_output": "openssh-server installed"
+        },
+        {
+          "step": "7.2",
+          "description": "Start SSH service",
+          "command": "sudo systemctl start ssh && sudo systemctl enable ssh",
+          "expected_output": "SSH service started and enabled"
+        },
+        {
+          "step": "7.3",
+          "description": "Check SSH status",
+          "command": "sudo systemctl status ssh | grep -E 'Active|running'",
+          "expected_output": "Active: active (running)"
+        },
+        {
+          "step": "7.4",
+          "description": "Generate SSH key pair (if not exists)",
+          "command": "ssh-keygen -t ed25519 -f ~/.ssh/id_ed25519 -N '' -C 'cursor-monitor-key'",
+          "note": "This creates private key (~/.ssh/id_ed25519) and public key (~/.ssh/id_ed25519.pub)"
+        },
+        {
+          "step": "7.5",
+          "description": "Add public key to authorized_keys",
+          "command": "cat ~/.ssh/id_ed25519.pub >> ~/.ssh/authorized_keys && chmod 600 ~/.ssh/authorized_keys && chmod 700 ~/.ssh",
+          "expected_output": "Public key added to authorized_keys"
+        },
+        {
+          "step": "7.6",
+          "description": "Get server IP address",
+          "command": "hostname -I | awk '{print $1}' || ip addr show | grep -E 'inet.*scope global' | awk '{print $2}' | cut -d'/' -f1 | head -1",
+          "note": "Save this IP for SSH connection"
+        },
+        {
+          "step": "7.7",
+          "description": "Create SSH connection info file",
+          "command": "cat > ~/SSH_READY.txt << EOF\nSSH Connection Information\n==========================\nIP: $(hostname -I | awk '{print $1}')\nUser: $(whoami)\nPort: 22\nPrivate Key Location: ~/.ssh/id_ed25519\n\nTo connect from another machine:\nssh -i ~/.ssh/id_ed25519 $(whoami)@$(hostname -I | awk '{print $1}')\n\nPublic Key:\n$(cat ~/.ssh/id_ed25519.pub)\nEOF\ncat ~/SSH_READY.txt",
+          "expected_output": "SSH connection information saved"
+        }
+      ],
+      "security_notes": [
+        "SSH keys provide secure authentication without passwords",
+        "Keep private key (~/.ssh/id_ed25519) secure and never share it",
+        "Public key can be safely added to authorized_keys on multiple servers"
+      ]
+    },
+    "step_8_install_tailscale": {
+      "title": "Install and Configure Tailscale",
+      "description": "Set up Tailscale VPN for secure network access",
+      "commands": [
+        {
+          "step": "8.1",
+          "description": "Install Tailscale",
+          "command": "curl -fsSL https://tailscale.com/install.sh | sh",
+          "expected_output": "Tailscale installed successfully"
+        },
+        {
+          "step": "8.2",
+          "description": "Start Tailscale with auth key",
+          "command": "sudo tailscale up --auth-key=YOUR_TAILSCALE_AUTH_KEY",
+          "note": "Replace YOUR_TAILSCALE_AUTH_KEY with your actual key from https://login.tailscale.com/admin/settings/keys",
+          "expected_output": "Successfully connected to Tailscale"
+        },
+        {
+          "step": "8.3",
+          "description": "Check Tailscale status",
+          "command": "sudo tailscale status",
+          "expected_output": "Should show connected devices and Tailscale IP (100.x.x.x)"
+        },
+        {
+          "step": "8.4",
+          "description": "Get Tailscale IP address",
+          "command": "sudo tailscale ip -4",
+          "expected_output": "Should return Tailscale IP (e.g., 100.74.153.76)"
+        },
+        {
+          "step": "8.5",
+          "description": "Create Tailscale connection info",
+          "command": "cat > ~/TAILSCALE_SSH_FINAL.md << EOF\nTailscale Connection Information\n==================================\nTailscale IP: $(sudo tailscale ip -4)\nLocal IP: $(hostname -I | awk '{print $1}')\n\nAccess application via Tailscale:\nhttp://$(sudo tailscale ip -4):3000\n\nSSH via Tailscale:\nssh -i ~/.ssh/id_ed25519 $(whoami)@$(sudo tailscale ip -4)\nEOF\ncat ~/TAILSCALE_SSH_FINAL.md",
+          "expected_output": "Tailscale connection information saved"
+        }
+      ],
+      "alternative_userspace_networking": {
+        "description": "If kernel module installation fails, use userspace networking",
+        "command": "sudo tailscale up --auth-key=YOUR_KEY --userspace-networking",
+        "note": "This works without kernel module but may have performance impact"
+      },
+      "troubleshooting": {
+        "kernel_module_failed": {
+          "symptom": "Failed to install Tailscale kernel module",
+          "solution": "Use userspace networking: sudo tailscale up --auth-key=YOUR_KEY --userspace-networking"
+        },
+        "auth_key_invalid": {
+          "symptom": "Authentication failed",
+          "solution": "Generate new auth key from Tailscale admin panel (one-time use keys expire)"
+        }
+      }
+    },
+    "step_9_fix_common_issues": {
+      "title": "Fix Common Issues",
+      "description": "Solutions for common problems encountered during setup",
+      "issues": {
+        "next_public_variables_missing": {
+          "symptom": "Error: either NEXT_PUBLIC_SUPABASE_URL and NEXT_PUBLIC_SUPABASE_ANON_KEY env variables or supabaseUrl and supabaseKey are required!",
+          "cause": "NEXT_PUBLIC_* variables are embedded at build time, not runtime",
+          "solution": [
+            "1. Ensure .env file has NEXT_PUBLIC_SUPABASE_URL and NEXT_PUBLIC_SUPABASE_ANON_KEY",
+            "2. Verify docker-compose.yml has build.args section with these variables",
+            "3. Rebuild container: /tmp/docker-compose build --no-cache app",
+            "4. Restart container: /tmp/docker-compose up -d app"
+          ],
+          "verification": "Check Dockerfile has ARG and ENV for NEXT_PUBLIC_* variables in builder stage"
+        },
+        "docker_proxy_missing": {
+          "symptom": "Error: exec: \"docker-proxy\": executable file not found",
+          "cause": "Docker proxy is missing, preventing port mapping",
+          "solution": [
+            "1. Use network_mode: host in docker-compose.yml (removes need for port mapping)",
+            "2. Comment out ports section: # ports: - \"3000:3000\""
+          ]
+        },
+        "supabase_connection_failed": {
+          "symptom": "TypeError: fetch failed for Supabase",
+          "cause": "Container cannot reach external network",
+          "solution": [
+            "1. Use network_mode: host in docker-compose.yml",
+            "2. Verify Supabase URL and keys are correct in .env",
+            "3. Test connectivity: curl https://your-project.supabase.co"
+          ]
+        },
+        "redis_connection_timeout": {
+          "symptom": "connect ETIMEDOUT for Redis",
+          "cause": "Redis is on Tailscale network, container needs network access",
+          "solution": [
+            "1. Use network_mode: host in docker-compose.yml",
+            "2. Verify Redis IP is accessible: ping 100.98.212.73",
+            "3. Redis is optional - system works in database-only mode if Redis unavailable"
+          ],
+          "note": "Worker will log 'using database-only mode' if Redis is unavailable - this is expected behavior"
+        }
+      }
+    }
+  },
+  "docker_compose_configuration": {
+    "file_location": "docker-compose.yml",
+    "key_features": {
+      "build_args": {
+        "description": "Passes NEXT_PUBLIC_* variables during build time",
+        "location": "services.app.build.args",
+        "variables": [
+          "NEXT_PUBLIC_SUPABASE_URL",
+          "NEXT_PUBLIC_SUPABASE_ANON_KEY"
+        ]
+      },
+      "network_mode": {
+        "value": "host",
+        "reason": "Allows containers to access external services (Supabase, Redis on Tailscale) without port mapping issues",
+        "note": "Containers use host's network stack directly"
+      },
+      "environment_variables": {
+        "description": "Runtime environment variables passed to containers",
+        "source": ".env file via env_file and explicit environment section"
+      }
+    }
+  },
+  "dockerfile_configuration": {
+    "app_dockerfile": {
+      "location": "Dockerfile",
+      "key_sections": {
+        "build_args": {
+          "stage": "builder",
+          "code": "ARG NEXT_PUBLIC_SUPABASE_URL\nARG NEXT_PUBLIC_SUPABASE_ANON_KEY\nENV NEXT_PUBLIC_SUPABASE_URL=${NEXT_PUBLIC_SUPABASE_URL}\nENV NEXT_PUBLIC_SUPABASE_ANON_KEY=${NEXT_PUBLIC_SUPABASE_ANON_KEY}",
+          "purpose": "Embeds Supabase credentials into Next.js bundle at build time"
+        },
+        "standalone_output": {
+          "note": "Next.js configured with output: 'standalone' in next.config.mjs for optimized Docker deployment"
+        }
+      }
+    },
+    "worker_dockerfile": {
+      "location": "orchestrator/Dockerfile",
+      "note": "Worker container runs background orchestration tasks independently"
+    }
+  },
+  "verification_checklist": {
+    "docker": [
+      "✅ Docker daemon running (docker ps works)",
+      "✅ Docker Compose available (/tmp/docker-compose --version)",
+      "✅ Containers built successfully (docker images | grep workspace)",
+      "✅ Containers running (/tmp/docker-compose ps shows 'Up' status)"
+    ],
+    "environment": [
+      "✅ .env file exists with all required variables",
+      "✅ NEXT_PUBLIC_SUPABASE_URL and NEXT_PUBLIC_SUPABASE_ANON_KEY set",
+      "✅ SUPABASE_SERVICE_ROLE_KEY set",
+      "✅ CURSOR_API_KEY set"
+    ],
+    "database": [
+      "✅ Supabase schema executed (tables exist)",
+      "✅ Can query orchestrations table",
+      "✅ Worker heartbeats being written"
+    ],
+    "application": [
+      "✅ App container logs show 'Ready in XXms'",
+      "✅ Worker container logs show initialization",
+      "✅ API endpoint responds: curl http://localhost:3000/api/cloud-agents/orchestrations",
+      "✅ No NEXT_PUBLIC_* errors in browser console"
+    ],
+    "network": [
+      "✅ SSH server running (sudo systemctl status ssh)",
+      "✅ SSH key pair generated (~/.ssh/id_ed25519 exists)",
+      "✅ Tailscale connected (sudo tailscale status)",
+      "✅ Tailscale IP obtained (sudo tailscale ip -4)"
+    ]
+  },
+  "quick_reference_commands": {
+    "docker": {
+      "build_app": "/tmp/docker-compose build --no-cache app",
+      "build_worker": "/tmp/docker-compose build --no-cache worker",
+      "start_all": "/tmp/docker-compose up -d",
+      "stop_all": "/tmp/docker-compose stop",
+      "logs_app": "/tmp/docker-compose logs app --tail 50",
+      "logs_worker": "/tmp/docker-compose logs worker --tail 50",
+      "status": "/tmp/docker-compose ps",
+      "restart_app": "/tmp/docker-compose restart app"
+    },
+    "ssh": {
+      "generate_key": "ssh-keygen -t ed25519 -f ~/.ssh/id_ed25519 -N '' -C 'cursor-monitor-key'",
+      "add_to_authorized": "cat ~/.ssh/id_ed25519.pub >> ~/.ssh/authorized_keys",
+      "get_ip": "hostname -I | awk '{print $1}'",
+      "test_connection": "ssh -i ~/.ssh/id_ed25519 $(whoami)@$(hostname -I | awk '{print $1}')"
+    },
+    "tailscale": {
+      "install": "curl -fsSL https://tailscale.com/install.sh | sh",
+      "connect": "sudo tailscale up --auth-key=YOUR_KEY",
+      "status": "sudo tailscale status",
+      "get_ip": "sudo tailscale ip -4",
+      "userspace_mode": "sudo tailscale up --auth-key=YOUR_KEY --userspace-networking"
+    },
+    "verification": {
+      "test_api": "curl -s http://localhost:3000/api/cloud-agents/orchestrations | jq .",
+      "check_containers": "docker ps | grep cursor-monitor",
+      "check_env": "docker exec cursor-monitor-app printenv | grep NEXT_PUBLIC"
+    }
+  },
+  "architecture_overview": {
+    "containers": {
+      "app": {
+        "name": "cursor-monitor-app",
+        "purpose": "Next.js UI + API routes",
+        "port": "3000",
+        "network": "host mode",
+        "build_time_vars": ["NEXT_PUBLIC_SUPABASE_URL", "NEXT_PUBLIC_SUPABASE_ANON_KEY"],
+        "runtime_vars": ["All variables from .env"]
+      },
+      "worker": {
+        "name": "cursor-monitor-worker",
+        "purpose": "Background orchestration processing",
+        "network": "host mode",
+        "runtime_vars": ["All variables from .env"]
+      }
+    },
+    "external_services": {
+      "supabase": {
+        "role": "Database (system of record)",
+        "connection": "Via NEXT_PUBLIC_SUPABASE_URL (public) and SUPABASE_SERVICE_ROLE_KEY (private)",
+        "required": true
+      },
+      "redis": {
+        "role": "Optional queue optimization",
+        "connection": "Via REDIS_HOST (Tailscale IP), REDIS_PORT, REDIS_PASSWORD",
+        "required": false,
+        "fallback": "Database-only mode (outbox pattern)"
+      }
+    },
+    "network_access": {
+      "ssh": {
+        "purpose": "Remote server access",
+        "port": "22",
+        "authentication": "SSH key (ed25519)"
+      },
+      "tailscale": {
+        "purpose": "Secure VPN for accessing services across network",
+        "ip_range": "100.x.x.x",
+        "benefits": ["Access Redis on remote machine", "Secure access to application"]
+      }
+    }
+  },
+  "troubleshooting_guide": {
+    "container_wont_start": {
+      "check": ["View logs: /tmp/docker-compose logs app", "Check .env file exists", "Verify Docker daemon running"],
+      "common_fixes": ["Rebuild: /tmp/docker-compose build --no-cache app", "Check disk space: df -h", "Check memory: free -h"]
+    },
+    "api_returns_500": {
+      "check": ["Check app logs for errors", "Verify Supabase credentials in .env", "Test Supabase connection: curl https://your-project.supabase.co"],
+      "common_fixes": ["Rebuild with correct NEXT_PUBLIC_* variables", "Restart container: /tmp/docker-compose restart app"]
+    },
+    "worker_not_processing": {
+      "check": ["View worker logs: /tmp/docker-compose logs worker", "Check database for outbox_jobs", "Verify CURSOR_API_KEY is set"],
+      "common_fixes": ["Restart worker: /tmp/docker-compose restart worker", "Check rate limits on Cursor API"]
+    },
+    "cant_access_via_tailscale": {
+      "check": ["Verify Tailscale status: sudo tailscale status", "Check firewall: sudo ufw status", "Test ping: ping 100.x.x.x"],
+      "common_fixes": ["Restart Tailscale: sudo tailscale down && sudo tailscale up", "Use userspace networking if kernel module fails"]
+    }
+  },
+  "final_notes": {
+    "important_reminders": [
+      "NEXT_PUBLIC_* variables MUST be available during Docker build (not just runtime)",
+      "Always rebuild containers after changing NEXT_PUBLIC_* variables",
+      "Use network_mode: host to avoid Docker networking issues",
+      "Redis is optional - system works fully without it (database-only mode)",
+      "SSH keys should be kept secure and never committed to git",
+      "Tailscale auth keys are one-time use - generate new ones as needed"
+    ],
+    "production_considerations": [
+      "Use strong passwords for all services",
+      "Rotate API keys regularly",
+      "Monitor container logs for errors",
+      "Set up automated backups for database",
+      "Use HTTPS in production (reverse proxy with nginx/traefik)",
+      "Implement rate limiting for API endpoints"
+    ]
+  },
+  "example_workflow": {
+    "complete_setup_from_scratch": [
+      "1. Install Docker and Docker Compose (Step 1)",
+      "2. Create .env file with credentials (Step 2)",
+      "3. Initialize database schema (Step 3)",
+      "4. Build containers (Step 4)",
+      "5. Start containers (Step 5)",
+      "6. Verify setup (Step 6)",
+      "7. Install SSH server (Step 7)",
+      "8. Install Tailscale (Step 8)",
+      "9. Fix any issues (Step 9)"
+    ],
+    "typical_daily_operations": [
+      "Check container status: /tmp/docker-compose ps",
+      "View logs if issues: /tmp/docker-compose logs app --tail 50",
+      "Restart if needed: /tmp/docker-compose restart app",
+      "Access application: http://TAILSCALE_IP:3000"
+    ]
+  }
+}

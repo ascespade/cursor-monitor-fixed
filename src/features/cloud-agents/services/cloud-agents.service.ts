@@ -1,0 +1,267 @@
+/**
+ * CloudAgentsService
+ *
+ * Purpose:
+ * - Provide a thin abstraction over the internal `/api/cloud-agents/*`
+ *   routes for use in client-side hooks and components.
+ */
+import type {
+  CursorAgent,
+  CursorConversationResponse,
+  CursorListAgentsResponse,
+  CursorModelListResponse,
+  CursorRepositoriesResponse,
+  CursorUserInfo
+} from '@/features/cloud-agents/types';
+
+interface ListAgentsOptions {
+  configId?: string;
+  limit?: number;
+  cursor?: string;
+}
+
+async function parseOkResponse<T>(response: Response): Promise<T> {
+  const json = (await response.json()) as unknown;
+
+  if (json && typeof json === 'object' && 'data' in (json as { data?: unknown })) {
+    return (json as { data: T }).data;
+  }
+
+  return json as T;
+}
+
+export async function fetchCloudAgentConfigs(): Promise<{
+  configs: Array<{ id: string; name: string; description: string | null }>;
+}> {
+  const response = await fetch('/api/cloud-agents/configs');
+  if (!response.ok) throw new Error('Failed to load Cursor API configs');
+  return parseOkResponse<{
+    configs: Array<{ id: string; name: string; description: string | null }>;
+  }>(response);
+}
+
+interface ListAgentsOptionsWithApiKey extends ListAgentsOptions {
+  apiKey?: string; // API key from localStorage
+}
+
+export async function fetchCloudAgents(options: ListAgentsOptionsWithApiKey = {}): Promise<CursorListAgentsResponse> {
+  const params = new URLSearchParams();
+
+  // Priority: apiKey (from localStorage) > configId (including env_cursor_api_key)
+  // For env var configs, prefer configId over apiKey to use server-side env var
+  if (options.configId === 'env_cursor_api_key') {
+    params.set('configId', options.configId);
+  } else if (options.apiKey) {
+    params.set('apiKey', options.apiKey);
+  } else if (options.configId) {
+    params.set('configId', options.configId);
+  }
+  if (options.limit != null) params.set('limit', String(options.limit));
+  if (options.cursor) params.set('cursor', options.cursor);
+
+  const response = await fetch(`/api/cloud-agents/agents?${params.toString()}`);
+  if (!response.ok) throw new Error('Failed to load cloud agents');
+  return parseOkResponse<CursorListAgentsResponse>(response);
+}
+
+export async function fetchCloudAgent(
+  id: string,
+  configId?: string,
+  apiKey?: string
+): Promise<CursorAgent> {
+  const params = new URLSearchParams();
+  // For env var configs, prefer configId over apiKey
+  if (configId === 'env_cursor_api_key') {
+    params.set('configId', configId);
+  } else if (apiKey) {
+    params.set('apiKey', apiKey);
+  } else if (configId) {
+    params.set('configId', configId);
+  }
+
+  const response = await fetch(`/api/cloud-agents/agents/${encodeURIComponent(id)}?${params.toString()}`);
+  if (!response.ok) throw new Error('Failed to load agent');
+  return parseOkResponse<CursorAgent>(response);
+}
+
+export async function fetchCloudAgentConversation(
+  id: string,
+  options?: { configId?: string; apiKey?: string }
+): Promise<CursorConversationResponse> {
+  const params = new URLSearchParams();
+  // For env var configs, prefer configId over apiKey
+  if (options?.configId === 'env_cursor_api_key') {
+    params.set('configId', options.configId);
+  } else if (options?.apiKey) {
+    params.set('apiKey', options.apiKey);
+  } else if (options?.configId) {
+    params.set('configId', options.configId);
+  }
+
+  const response = await fetch(
+    `/api/cloud-agents/agents/${encodeURIComponent(id)}/conversation?${params.toString()}`
+  );
+  if (!response.ok) throw new Error('Failed to load conversation');
+  return parseOkResponse<CursorConversationResponse>(response);
+}
+
+export async function launchCloudAgent(
+  payload: {
+    configId?: string;
+    apiKey?: string;
+    promptText: string;
+    repository: string;
+    ref?: string;
+    model?: string;
+    autoCreatePr?: boolean;
+  }
+): Promise<CursorAgent> {
+  const params = new URLSearchParams();
+  // For env var configs, prefer configId over apiKey
+  if (payload.configId === 'env_cursor_api_key') {
+    params.set('configId', payload.configId);
+  } else if (payload.apiKey) {
+    params.set('apiKey', payload.apiKey);
+  } else if (payload.configId) {
+    params.set('configId', payload.configId);
+  }
+
+  const response = await fetch(`/api/cloud-agents/agents?${params.toString()}`, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json'
+    },
+    body: JSON.stringify({
+      prompt: { text: payload.promptText },
+      source: {
+        repository: payload.repository,
+        ref: payload.ref || 'main'
+      },
+      target: {
+        autoCreatePr: payload.autoCreatePr ?? true
+      },
+      model: payload.model
+    })
+  });
+
+  if (!response.ok) throw new Error('Failed to launch agent');
+  return parseOkResponse<CursorAgent>(response);
+}
+
+export async function addCloudAgentFollowup(
+  id: string,
+  payload: { configId?: string; apiKey?: string; promptText: string }
+): Promise<{ id: string }> {
+  const params = new URLSearchParams();
+  // For env var configs, prefer configId over apiKey
+  if (payload.configId === 'env_cursor_api_key') {
+    params.set('configId', payload.configId);
+  } else if (payload.apiKey) {
+    params.set('apiKey', payload.apiKey);
+  } else if (payload.configId) {
+    params.set('configId', payload.configId);
+  }
+
+  const response = await fetch(
+    `/api/cloud-agents/agents/${encodeURIComponent(id)}/followup?${params.toString()}`,
+    {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ promptText: payload.promptText })
+    }
+  );
+
+  if (!response.ok) throw new Error('Failed to add follow-up');
+  return parseOkResponse<{ id: string }>(response);
+}
+
+export async function stopCloudAgent(
+  id: string,
+  options?: { configId?: string; apiKey?: string }
+): Promise<{ id: string }> {
+  const params = new URLSearchParams();
+  if (options?.apiKey) {
+    params.set('apiKey', options.apiKey);
+  } else if (options?.configId) {
+    params.set('configId', options.configId);
+  }
+
+  const response = await fetch(`/api/cloud-agents/agents/${encodeURIComponent(id)}/stop?${params.toString()}`, {
+    method: 'POST'
+  });
+
+  if (!response.ok) throw new Error('Failed to stop agent');
+  return parseOkResponse<{ id: string }>(response);
+}
+
+export async function deleteCloudAgent(
+  id: string,
+  options?: { configId?: string; apiKey?: string }
+): Promise<{ id: string }> {
+  const params = new URLSearchParams();
+  // For env var configs, prefer configId over apiKey
+  if (options?.configId === 'env_cursor_api_key') {
+    params.set('configId', options.configId);
+  } else if (options?.apiKey) {
+    params.set('apiKey', options.apiKey);
+  } else if (options?.configId) {
+    params.set('configId', options.configId);
+  }
+
+  const response = await fetch(`/api/cloud-agents/agents/${encodeURIComponent(id)}?${params.toString()}`, {
+    method: 'DELETE'
+  });
+
+  if (!response.ok) throw new Error('Failed to delete agent');
+  return parseOkResponse<{ id: string }>(response);
+}
+
+export async function fetchCloudAgentUserInfo(options?: { configId?: string; apiKey?: string }): Promise<CursorUserInfo> {
+  const params = new URLSearchParams();
+  // For env var configs, prefer configId over apiKey
+  if (options?.configId === 'env_cursor_api_key') {
+    params.set('configId', options.configId);
+  } else if (options?.apiKey) {
+    params.set('apiKey', options.apiKey);
+  } else if (options?.configId) {
+    params.set('configId', options.configId);
+  }
+
+  const response = await fetch(`/api/cloud-agents/me?${params.toString()}`);
+  if (!response.ok) throw new Error('Failed to load API user info');
+  return parseOkResponse<CursorUserInfo>(response);
+}
+
+export async function fetchCloudAgentModels(options?: { configId?: string; apiKey?: string }): Promise<CursorModelListResponse> {
+  const params = new URLSearchParams();
+  // For env var configs, prefer configId over apiKey
+  if (options?.configId === 'env_cursor_api_key') {
+    params.set('configId', options.configId);
+  } else if (options?.apiKey) {
+    params.set('apiKey', options.apiKey);
+  } else if (options?.configId) {
+    params.set('configId', options.configId);
+  }
+
+  const response = await fetch(`/api/cloud-agents/models?${params.toString()}`);
+  if (!response.ok) throw new Error('Failed to load models');
+  return parseOkResponse<CursorModelListResponse>(response);
+}
+
+export async function fetchCloudAgentRepositories(
+  options?: { configId?: string; apiKey?: string }
+): Promise<CursorRepositoriesResponse> {
+  const params = new URLSearchParams();
+  // For env var configs, prefer configId over apiKey
+  if (options?.configId === 'env_cursor_api_key') {
+    params.set('configId', options.configId);
+  } else if (options?.apiKey) {
+    params.set('apiKey', options.apiKey);
+  } else if (options?.configId) {
+    params.set('configId', options.configId);
+  }
+
+  const response = await fetch(`/api/cloud-agents/repositories?${params.toString()}`);
+  if (!response.ok) throw new Error('Failed to load repositories');
+  return parseOkResponse<CursorRepositoriesResponse>(response);
+}

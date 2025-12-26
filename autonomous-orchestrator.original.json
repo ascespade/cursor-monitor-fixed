@@ -1,0 +1,488 @@
+{
+  "project": {
+    "name": "Autonomous Cursor Orchestrator",
+    "version": "1.0.0",
+    "description": "نظام ذكي مستقل لإدارة Cursor Cloud Agents - يحلل، يقرر، ويستمر في العمل حتى إكمال المهام الكبيرة بدون تدخل بشري",
+    "purpose": "تحويل Cloud Agents من نظام يتوقف بعد كل خطوة إلى نظام يعمل بشكل مستقل حتى إنجاز المهمة كاملة"
+  },
+  "architecture": {
+    "overview": "النظام يستقبل webhooks من Cursor Cloud Agents، يحلل التقدم باستخدام AI محلي، يقرر الخطوة التالية (CONTINUE/TEST/COMPLETE)، ويرسل follow-ups تلقائياً",
+    "components": [
+      {
+        "name": "Orchestrator Server",
+        "file": "src/orchestrator.js",
+        "role": "السيرفر الرئيسي - يستقبل webhooks، ينسق بين المكونات، يدير التدفق",
+        "responsibilities": [
+          "استقبال webhooks من Cursor بـ signature verification",
+          "إدارة حالة كل Agent في Database",
+          "استدعاء Analyzer لتحليل التقدم",
+          "استدعاء Tester لاختبار الكود",
+          "إرسال follow-ups للـ Cloud Agents",
+          "إرسال notifications عند الأحداث المهمة"
+        ]
+      },
+      {
+        "name": "State Manager",
+        "file": "src/state-manager.js",
+        "role": "إدارة حالات Agents في SQLite database",
+        "responsibilities": [
+          "حفظ وتحديث حالة كل Agent (iterations, tasks, status)",
+          "كل Agent له state منفصل تماماً (لا تداخل)",
+          "تتبع عدد التكرارات لمنع loops لا نهائية",
+          "حفظ آخر تحليل لكل Agent"
+        ],
+        "database_schema": {
+          "table": "agent_states",
+          "columns": [
+            "agent_id TEXT PRIMARY KEY - معرّف فريد من Cursor",
+            "task_description TEXT - وصف المهمة الأصلية",
+            "branch_name TEXT - اسم الـ branch الذي ينشئه Agent",
+            "repository TEXT - رابط GitHub repository",
+            "iterations INTEGER - عدد المرات التي تكرر فيها التحليل",
+            "status TEXT - ACTIVE/COMPLETED/ERROR/TIMEOUT",
+            "tasks_completed TEXT - JSON array للمهام المنجزة",
+            "tasks_remaining TEXT - JSON array للمهام المتبقية",
+            "last_analysis TEXT - JSON للتحليل الأخير",
+            "created_at DATETIME - وقت الإنشاء",
+            "updated_at DATETIME - آخر تحديث"
+          ]
+        }
+      },
+      {
+        "name": "Analyzer",
+        "file": "src/analyzer.js",
+        "role": "التحليل الذكي باستخدام Cursor Agent محلي - قلب النظام",
+        "how_it_works": {
+          "step1": "يجلب المحادثة الكاملة من Cloud Agent عبر API",
+          "step2": "يجلب حالة Agent (branch, summary, PR url)",
+          "step3": "يبني prompt مفصل للتحليل يحتوي على: المحادثة، المهام المنجزة، المهام المتبقية",
+          "step4": "يستدعي Cursor API (أو CLI) للتحليل",
+          "step5": "يستقبل قرار بصيغة JSON: {action, reasoning, followupMessage, confidence}"
+        },
+        "decisions": [
+          {
+            "action": "CONTINUE",
+            "when": "المهمة لم تكتمل بعد",
+            "result": "يرسل follow-up message للـ Cloud Agent للاستمرار"
+          },
+          {
+            "action": "TEST",
+            "when": "المهمة اكتملت ظاهرياً",
+            "result": "يستدعي Tester لفحص الكود محلياً"
+          },
+          {
+            "action": "FIX",
+            "when": "هناك أخطاء واضحة",
+            "result": "يرسل تعليمات إصلاح محددة"
+          },
+          {
+            "action": "COMPLETE",
+            "when": "كل شيء جاهز ومختبر",
+            "result": "ينهي العملية ويرسل إشعار نجاح"
+          }
+        ]
+      },
+      {
+        "name": "Tester",
+        "file": "src/tester.js",
+        "role": "اختبار الكود محلياً في بيئة منعزلة",
+        "how_it_works": {
+          "step1": "يحفظ البرانش الحالي (مثل main)",
+          "step2": "يعمل git checkout للـ branch الجديد (cursor/feature-123)",
+          "step3": "يشغل: npm install → npm test → npm run lint → npm run build",
+          "step4": "إذا نجح: يعود لـ main ويُرجع success",
+          "step5": "إذا فشل: يحلل الأخطاء ويولد تعليمات إصلاح",
+          "step6": "في كل الحالات: يعود للبرانش الأصلي (لا تأثير على main)"
+        },
+        "important_note": "لا يعمل merge أبداً - فقط checkout مؤقت للاختبار"
+      },
+      {
+        "name": "Notifier",
+        "file": "src/notifier.js",
+        "role": "إرسال إشعارات عبر قنوات متعددة",
+        "channels": ["Slack", "Email", "Discord", "SMS"],
+        "events": [
+          "progress - تحديثات دورية (كل 3 iterations)",
+          "success - عند إكمال المهمة",
+          "error - عند حدوث خطأ",
+          "timeout - عند تجاوز الحد الأقصى"
+        ]
+      }
+    ]
+  },
+  "workflow": {
+    "description": "كيف يعمل النظام من البداية للنهاية",
+    "steps": [
+      {
+        "step": 1,
+        "title": "البداية",
+        "actor": "المطور",
+        "action": "يبدأ Cloud Agent بمهمة كبيرة عبر Cursor أو API",
+        "example": "أنشئ نظام E-commerce كامل مع Backend + Frontend + Tests",
+        "result": {
+          "agent_id": "bc_xyz789 (فريد من Cursor)",
+          "branch": "cursor/ecommerce-xyz789 (جديد)",
+          "status": "CREATING → RUNNING"
+        }
+      },
+      {
+        "step": 2,
+        "title": "العمل والتوقف",
+        "actor": "Cloud Agent",
+        "action": "ينجز مجموعة مهام (مثلاً: Backend structure) ثم يتوقف",
+        "reason": "Cloud Agents تتوقف دورياً لتوفير موارد وانتظار تعليمات",
+        "result": "يرسل webhook بـ status: FINISHED"
+      },
+      {
+        "step": 3,
+        "title": "استقبال Webhook",
+        "actor": "Orchestrator",
+        "action": "يستقبل webhook ويتحقق من signature",
+        "webhook_format": {
+          "id": "bc_xyz789",
+          "status": "FINISHED",
+          "event": "statusChange",
+          "source": {"repository": "...", "ref": "main"},
+          "target": {"branchName": "cursor/ecommerce-xyz789", "prUrl": "..."},
+          "summary": "Created backend structure"
+        },
+        "security": "يتحقق من HMAC-SHA256 signature لضمان أن الـ webhook من Cursor فعلاً"
+      },
+      {
+        "step": 4,
+        "title": "حفظ/تحديث الحالة",
+        "actor": "State Manager",
+        "action": "يجلب state من Database أو ينشئ جديد إذا كانت أول مرة",
+        "updates": [
+          "iterations += 1",
+          "updatedAt = now()",
+          "يحفظ في SQLite"
+        ],
+        "check": "إذا iterations >= maxIterations (مثلاً 20) → يوقف العملية"
+      },
+      {
+        "step": 5,
+        "title": "جلب البيانات",
+        "actor": "Orchestrator",
+        "api_calls": [
+          {
+            "endpoint": "GET /v0/agents/{agent_id}/conversation",
+            "purpose": "جلب المحادثة الكاملة - كل رسائل المستخدم والـ Agent",
+            "auth": "Basic Auth مع CURSOR_API_KEY"
+          },
+          {
+            "endpoint": "GET /v0/agents/{agent_id}",
+            "purpose": "جلب حالة Agent الحالية - branch, summary, PR url",
+            "auth": "Basic Auth مع CURSOR_API_KEY"
+          }
+        ]
+      },
+      {
+        "step": 6,
+        "title": "التحليل الذكي",
+        "actor": "Analyzer (Cursor Agent محلي)",
+        "process": {
+          "input": "المحادثة + الحالة + State السابق",
+          "prompt_example": "راجع هذه المحادثة من Cloud Agent وحدد: ما تم إنجازه؟ ما المتبقي؟ هل نكمل أم نختبر؟",
+          "api_call": {
+            "endpoint": "POST https://api.cursor.com/../chat (أو استخدام CLI)",
+            "body": {
+              "model": "claude-sonnet-4",
+              "messages": [{"role": "user", "content": "..."}],
+              "temperature": 0.1
+            }
+          },
+          "output": {
+            "action": "CONTINUE | TEST | FIX | COMPLETE",
+            "reasoning": "شرح مفصل للقرار",
+            "tasksCompleted": ["Backend", "Database schema"],
+            "tasksRemaining": ["Frontend", "Auth", "Tests"],
+            "followupMessage": "استمر في إنشاء Frontend React مع TypeScript",
+            "confidence": 0.85
+          }
+        }
+      },
+      {
+        "step": 7,
+        "title": "تنفيذ القرار",
+        "actor": "Orchestrator",
+        "scenarios": [
+          {
+            "if": "action === 'CONTINUE'",
+            "then": [
+              "يرسل POST /v0/agents/{agent_id}/followup",
+              "body: {prompt: {text: followupMessage}}",
+              "Cloud Agent يستأنف العمل",
+              "بعد فترة سيتوقف مجدداً → webhook جديد → التدفق يتكرر"
+            ]
+          },
+          {
+            "if": "action === 'TEST'",
+            "then": [
+              "يستدعي Tester",
+              "Tester يعمل checkout للـ branch",
+              "يشغل npm install && npm test && npm lint && npm build",
+              "إذا نجح: action = COMPLETE",
+              "إذا فشل: يولد fix instructions ويرسلها كـ follow-up"
+            ]
+          },
+          {
+            "if": "action === 'FIX'",
+            "then": [
+              "يرسل follow-up مع تعليمات الإصلاح",
+              "Agent يصلح الأخطاء",
+              "التدفق يتكرر"
+            ]
+          },
+          {
+            "if": "action === 'COMPLETE'",
+            "then": [
+              "يحدث status في Database إلى COMPLETED",
+              "يرسل notifications (Slack/Email)",
+              "يضيف comment على GitHub PR",
+              "يحذف state من Database (تنظيف)",
+              "العملية تنتهي ✅"
+            ]
+          }
+        ]
+      },
+      {
+        "step": 8,
+        "title": "التكرار",
+        "note": "الخطوات 2-7 تتكرر حتى الوصول لـ COMPLETE أو maxIterations",
+        "example_timeline": {
+          "09:00": "البداية - مهمة كبيرة",
+          "09:15": "Iteration 1: CONTINUE → Backend",
+          "09:30": "Iteration 2: CONTINUE → Frontend",
+          "10:00": "Iteration 3: CONTINUE → Auth",
+          "10:30": "Iteration 4: CONTINUE → Payment",
+          "11:00": "Iteration 5: CONTINUE → Tests",
+          "11:30": "Iteration 6: TEST → Testing locally",
+          "11:45": "Tests passed → COMPLETE ✅"
+        }
+      }
+    ]
+  },
+  "key_concepts": {
+    "agent_isolation": {
+      "problem": "كيف نفرق بين agents متعددة؟",
+      "solution": "كل Agent له:",
+      "unique_identifiers": {
+        "agent_id": "bc_xyz789 - يأتي من Cursor تلقائياً، فريد لكل Agent",
+        "branch_name": "cursor/ecommerce-xyz789 - branch خاص لكل Agent",
+        "database_record": "state منفصل في SQLite"
+      },
+      "example": {
+        "agent1": {
+          "id": "bc_task1",
+          "branch": "cursor/ecommerce-123",
+          "task": "E-commerce system"
+        },
+        "agent2": {
+          "id": "bc_task2",
+          "branch": "cursor/blog-456",
+          "task": "Blog platform"
+        }
+      },
+      "no_conflict": "لا تداخل أبداً - كل Agent يعمل بشكل مستقل تماماً"
+    },
+    "testing_strategy": {
+      "question": "كيف نختبر بدون تأثير على main branch؟",
+      "answer": "Checkout مؤقت",
+      "process": [
+        "1. currentBranch = git branch --show-current (حفظ الحالي مثل main)",
+        "2. git fetch origin cursor/feature-123",
+        "3. git checkout cursor/feature-123 (الآن في البرانش الجديد)",
+        "4. npm install && npm test (اختبار في عزلة)",
+        "5. git checkout main (العودة للأصلي)",
+        "6. ✅ لم نؤثر على main أبداً"
+      ],
+      "why_no_merge": "Merge يغير main وقد يسبب conflicts - نحن فقط نختبر"
+    },
+    "webhook_security": {
+      "threat": "أي شخص يمكنه إرسال webhook مزيف",
+      "protection": "HMAC-SHA256 Signature Verification",
+      "how_it_works": {
+        "cursor_side": [
+          "1. Cursor يحسب: signature = HMAC_SHA256(SECRET, webhook_body)",
+          "2. يرسل في header: X-Webhook-Signature: sha256=<signature>"
+        ],
+        "our_side": [
+          "1. نحسب: expected = HMAC_SHA256(OUR_SECRET, received_body)",
+          "2. نقارن: if (expected === received_signature) ✅ else ❌"
+        ]
+      }
+    },
+    "infinite_loop_prevention": {
+      "problem": "Agent قد يستمر في loop لا نهائي",
+      "solutions": [
+        {
+          "method": "maxIterations",
+          "value": 20,
+          "action": "إذا iterations >= 20 → نوقف العملية ونرسل إشعار"
+        },
+        {
+          "method": "timeout",
+          "value": "4 hours",
+          "action": "إذا Agent لم يتحدث منذ 4 ساعات → نعتبره stuck ونوقفه"
+        },
+        {
+          "method": "confidence_threshold",
+          "logic": "إذا confidence < 0.5 لعدة iterations متتالية → نطلب تدخل بشري"
+        }
+      ]
+    }
+  },
+  "file_structure": {
+    "root_directory": "autonomous-cursor-orchestrator/",
+    "essential_files": [
+      {
+        "path": "src/orchestrator.js",
+        "size": "~400 lines",
+        "description": "السيرفر الرئيسي Express",
+        "key_functions": [
+          "app.post('/webhook/cursor') - استقبال webhooks",
+          "processWebhookEvent() - معالجة async",
+          "handleAgentFinished() - معالج FINISHED",
+          "executeDecision() - تنفيذ قرار Analyzer",
+          "sendFollowup() - إرسال follow-up لـ Cursor API",
+          "verifyWebhookSignature() - أمان"
+        ],
+        "dependencies": ["express", "crypto", "state-manager", "analyzer", "tester", "notifier"]
+      },
+      {
+        "path": "src/state-manager.js",
+        "size": "~200 lines",
+        "description": "إدارة SQLite database",
+        "key_functions": [
+          "init() - إنشاء database و tables",
+          "saveState(agentId, state) - حفظ/تحديث",
+          "getState(agentId) - جلب state",
+          "incrementIterations(agentId) - زيادة العداد",
+          "deleteState(agentId) - حذف عند الانتهاء"
+        ],
+        "database": "orchestrator.db (SQLite)"
+      },
+      {
+        "path": "src/analyzer.js",
+        "size": "~300 lines",
+        "description": "التحليل الذكي - قلب النظام",
+        "key_functions": [
+          "analyzeProgress() - التحليل الرئيسي",
+          "analyzeWithAPI() - استخدام Cursor API",
+          "analyzeWithCLI() - استخدام Cursor CLI (بديل)",
+          "buildAnalysisPrompt() - بناء prompt مفصل",
+          "extractDecision() - استخراج JSON من الرد",
+          "fallbackAnalysis() - تحليل بسيط بدون AI"
+        ],
+        "models_supported": ["claude-sonnet-4", "gpt-4", "claude-opus-4"]
+      },
+      {
+        "path": "src/tester.js",
+        "size": "~350 lines",
+        "description": "اختبار الكود محلياً",
+        "key_functions": [
+          "testBranch(branchName) - الاختبار الرئيسي",
+          "runTests() - تشغيل test suite",
+          "determineTestCommands() - اكتشاف نوع المشروع",
+          "generateFixInstructions() - توليد تعليمات من أخطاء"
+        ],
+        "commands_executed": ["npm install", "npm test", "npm run lint", "npm run build"]
+      },
+      {
+        "path": "src/notifier.js",
+        "size": "~150 lines",
+        "description": "إرسال إشعارات",
+        "key_functions": [
+          "notifySuccess()",
+          "notifyFailure()",
+          "notifyProgress()",
+          "sendToSlack()",
+          "sendEmail() (يمكن إضافته)"
+        ]
+      },
+      {
+        "path": "config/config.json",
+        "format": "JSON",
+        "structure": {
+          "cursor": {"apiKey": "...", "apiBaseUrl": "https://api.cursor.com/v0"},
+          "webhook": {"secret": "...", "port": 3000, "publicUrl": "..."},
+          "github": {"projectPath": "/path/to/project", "defaultRepo": "..."},
+          "orchestrator": {"maxIterations": 20, "testingEnabled": true}
+        }
+      },
+      {
+        "path": ".env",
+        "format": "Environment variables",
+        "critical_vars": [
+          "CURSOR_API_KEY=sk_cursor_xxx - من cursor.com/settings",
+          "WEBHOOK_SECRET=xxx - 32+ chars random",
+          "PROJECT_PATH=/path/to/your/project"
+        ]
+      }
+    ]
+  },
+  "api_reference": {
+    "cursor_api_endpoints_used": [
+      {
+        "endpoint": "POST /v0/agents",
+        "purpose": "إنشاء Cloud Agent جديد",
+        "auth": "Basic Auth",
+        "body": {
+          "prompt": {"text": "المهمة"},
+          "model": "claude-sonnet-4 (optional)",
+          "source": {"repository": "...", "ref": "main"},
+          "target": {"autoCreatePr": true, "branchName": "..."},
+          "webhook": {"url": "https://...", "secret": "..."}
+        },
+        "response": {
+          "id": "bc_xyz789",
+          "status": "CREATING",
+          "target": {"branchName": "cursor/...", "url": "..."}
+        }
+      },
+      {
+        "endpoint": "GET /v0/agents/{id}",
+        "purpose": "جلب حالة Agent",
+        "response": {
+          "id": "...",
+          "status": "RUNNING | FINISHED | ERROR",
+          "summary": "ملخص ما تم إنجازه",
+          "source": {"repository": "...", "ref": "..."},
+          "target": {"branchName": "...", "prUrl": "..."}
+        }
+      },
+      {
+        "endpoint": "GET /v0/agents/{id}/conversation",
+        "purpose": "جلب المحادثة الكاملة",
+        "response": {
+          "id": "...",
+          "messages": [
+            {"id": "msg_1", "type": "user_message", "text": "..."},
+            {"id": "msg_2", "type": "assistant_message", "text": "..."}
+          ]
+        }
+      },
+      {
+        "endpoint": "POST /v0/agents/{id}/followup",
+        "purpose": "إرسال follow-up للاستمرار",
+        "body": {
+          "prompt": {"text": "استمر في المهمة التالية"}
+        },
+        "response": {"id": "bc_xyz789"}
+      },
+      {
+        "endpoint": "POST /v0/agents/{id}/stop",
+        "purpose": "إيقاف Agent",
+        "response": {"id": "bc_xyz789"}
+      },
+      {
+        "endpoint": "DELETE /v0/agents/{id}",
+        "purpose": "حذف Agent نهائياً",
+        "response": {"id": "bc_xyz789"}
+      }
+    ]
+  }
+}
+
+

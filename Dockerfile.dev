@@ -1,0 +1,31 @@
+# Dockerfile for Next.js Development (Hot Reload)
+# This container runs Next.js in development mode with hot reload
+# CRITICAL: No COPY . . - source code is mounted as volume
+
+FROM node:20-alpine
+
+# Install dependencies
+RUN apk add --no-cache libc6-compat
+
+WORKDIR /app
+
+# Copy ONLY package files (NOT source code)
+COPY package.json package-lock.json* ./
+
+# Install dependencies
+RUN npm ci
+
+# Expose Next.js dev server port
+EXPOSE 3000
+
+# Set development environment
+ENV NODE_ENV=development
+ENV NEXT_TELEMETRY_DISABLED=1
+
+# Enable file watching for Docker volumes
+ENV WATCHPACK_POLLING=true
+ENV CHOKIDAR_USEPOLLING=true
+
+# Start Next.js dev server with hot reload
+# MUST use npm run dev (NOT next start or next build)
+CMD ["npm", "run", "dev"]

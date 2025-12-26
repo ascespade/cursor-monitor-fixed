@@ -1,0 +1,646 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Orchestrator Settings</title>
+  <style>
+    * {
+      margin: 0;
+      padding: 0;
+      box-sizing: border-box;
+    }
+    
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif;
+      background: #0a0a0a;
+      color: #e5e5e5;
+      padding: 2rem;
+      line-height: 1.6;
+    }
+    
+    .container {
+      max-width: 900px;
+      margin: 0 auto;
+    }
+    
+    header {
+      margin-bottom: 2rem;
+      padding-bottom: 1rem;
+      border-bottom: 1px solid #333;
+    }
+    
+    h1 {
+      font-size: 1.75rem;
+      color: #fff;
+      margin-bottom: 0.5rem;
+    }
+    
+    .subtitle {
+      color: #888;
+      font-size: 0.9rem;
+    }
+    
+    .section {
+      background: #1a1a1a;
+      border: 1px solid #333;
+      border-radius: 8px;
+      padding: 1.5rem;
+      margin-bottom: 1.5rem;
+    }
+    
+    .section-title {
+      font-size: 1.1rem;
+      font-weight: 600;
+      color: #fff;
+      margin-bottom: 1rem;
+      display: flex;
+      align-items: center;
+      gap: 0.5rem;
+    }
+    
+    .field {
+      margin-bottom: 1.25rem;
+    }
+    
+    .field-label {
+      display: block;
+      font-size: 0.85rem;
+      font-weight: 500;
+      color: #ccc;
+      margin-bottom: 0.5rem;
+    }
+    
+    .field-label .required {
+      color: #ef4444;
+    }
+    
+    .field-input-group {
+      display: flex;
+      gap: 0.5rem;
+    }
+    
+    .field-input {
+      flex: 1;
+      background: #0a0a0a;
+      border: 1px solid #333;
+      border-radius: 6px;
+      padding: 0.75rem;
+      color: #e5e5e5;
+      font-family: 'Monaco', 'Courier New', monospace;
+      font-size: 0.85rem;
+    }
+    
+    .field-input:focus {
+      outline: none;
+      border-color: #3b82f6;
+      box-shadow: 0 0 0 3px rgba(59, 130, 246, 0.1);
+    }
+    
+    .field-input[type="password"] {
+      letter-spacing: 0.1em;
+    }
+    
+    .btn {
+      padding: 0.75rem 1.25rem;
+      border: none;
+      border-radius: 6px;
+      font-size: 0.85rem;
+      font-weight: 500;
+      cursor: pointer;
+      transition: all 0.2s;
+      white-space: nowrap;
+    }
+    
+    .btn-primary {
+      background: #3b82f6;
+      color: #fff;
+    }
+    
+    .btn-primary:hover:not(:disabled) {
+      background: #2563eb;
+    }
+    
+    .btn-test {
+      background: #10b981;
+      color: #fff;
+    }
+    
+    .btn-test:hover:not(:disabled) {
+      background: #059669;
+    }
+    
+    .btn:disabled {
+      opacity: 0.5;
+      cursor: not-allowed;
+    }
+    
+    .btn-save-all {
+      background: #8b5cf6;
+      color: #fff;
+      padding: 1rem 2rem;
+      font-size: 1rem;
+      width: 100%;
+      margin-top: 1rem;
+    }
+    
+    .btn-save-all:hover:not(:disabled) {
+      background: #7c3aed;
+    }
+    
+    .test-result {
+      margin-top: 0.5rem;
+      padding: 0.75rem;
+      border-radius: 6px;
+      font-size: 0.85rem;
+      display: none;
+    }
+    
+    .test-result.success {
+      background: #064e3b;
+      border: 1px solid #10b981;
+      color: #6ee7b7;
+      display: block;
+    }
+    
+    .test-result.error {
+      background: #7f1d1d;
+      border: 1px solid #ef4444;
+      color: #fca5a5;
+      display: block;
+    }
+    
+    .test-result.loading {
+      background: #1e3a8a;
+      border: 1px solid #3b82f6;
+      color: #93c5fd;
+      display: block;
+    }
+    
+    .help-text {
+      font-size: 0.75rem;
+      color: #666;
+      margin-top: 0.25rem;
+    }
+    
+    .status-badge {
+      display: inline-flex;
+      align-items: center;
+      gap: 0.5rem;
+      padding: 0.25rem 0.75rem;
+      border-radius: 12px;
+      font-size: 0.75rem;
+      font-weight: 500;
+      margin-left: 0.5rem;
+    }
+    
+    .status-badge.configured {
+      background: #064e3b;
+      color: #6ee7b7;
+    }
+    
+    .status-badge.missing {
+      background: #7f1d1d;
+      color: #fca5a5;
+    }
+    
+    .status-dot {
+      width: 6px;
+      height: 6px;
+      border-radius: 50%;
+    }
+    
+    .status-dot.configured {
+      background: #10b981;
+    }
+    
+    .status-dot.missing {
+      background: #ef4444;
+    }
+  </style>
+</head>
+<body>
+  <div class="container">
+    <header>
+      <h1>🔧 Orchestrator Settings</h1>
+      <p class="subtitle">Configure environment variables for the Autonomous Cursor Orchestrator</p>
+    </header>
+
+    <form id="settingsForm">
+      <!-- Cursor API -->
+      <div class="section">
+        <div class="section-title">
+          <span>Cursor API</span>
+          <span id="cursorApiStatus" class="status-badge missing">
+            <span class="status-dot missing"></span>
+            Missing
+          </span>
+        </div>
+        <div class="field">
+          <label class="field-label">
+            CURSOR_API_KEY <span class="required">*</span>
+          </label>
+          <div class="field-input-group">
+            <input
+              type="password"
+              id="CURSOR_API_KEY"
+              class="field-input"
+              placeholder="cur_xxxxxxxxxxxx"
+            />
+            <button type="button" class="btn btn-test" onclick="testCursorApi()">
+              Test
+            </button>
+          </div>
+          <div id="cursorApiResult" class="test-result"></div>
+          <p class="help-text">Your Cursor Cloud Agents API key</p>
+        </div>
+      </div>
+
+      <!-- Redis Configuration -->
+      <div class="section">
+        <div class="section-title">
+          <span>Redis Configuration</span>
+          <span id="redisStatus" class="status-badge missing">
+            <span class="status-dot missing"></span>
+            Missing
+          </span>
+        </div>
+        <div class="field">
+          <label class="field-label">
+            REDIS_HOST <span class="required">*</span>
+          </label>
+          <div class="field-input-group">
+            <input
+              type="text"
+              id="REDIS_HOST"
+              class="field-input"
+              placeholder="localhost or 176.224.73.232"
+            />
+            <button type="button" class="btn btn-test" onclick="testRedis()">
+              Test
+            </button>
+          </div>
+          <div id="redisResult" class="test-result"></div>
+          <p class="help-text">Redis server hostname or IP address<br><small>Use <code>localhost</code> for local, or Tailscale IP (100.x.x.x) for remote access</small></p>
+        </div>
+        <div class="field">
+          <label class="field-label">
+            REDIS_PORT
+          </label>
+          <input
+            type="text"
+            id="REDIS_PORT"
+            class="field-input"
+            placeholder="6379"
+            value="6379"
+          />
+          <p class="help-text">Redis server port (default: 6379)</p>
+        </div>
+        <div class="field">
+          <label class="field-label">
+            REDIS_PASSWORD
+          </label>
+          <input
+            type="password"
+            id="REDIS_PASSWORD"
+            class="field-input"
+            placeholder="(optional)"
+          />
+          <p class="help-text">Redis password (leave empty if not required)</p>
+        </div>
+      </div>
+
+      <!-- Supabase Configuration -->
+      <div class="section">
+        <div class="section-title">
+          <span>Supabase Configuration</span>
+          <span id="supabaseStatus" class="status-badge missing">
+            <span class="status-dot missing"></span>
+            Missing
+          </span>
+        </div>
+        <div class="field">
+          <label class="field-label">
+            NEXT_PUBLIC_SUPABASE_URL <span class="required">*</span>
+          </label>
+          <div class="field-input-group">
+            <input
+              type="text"
+              id="NEXT_PUBLIC_SUPABASE_URL"
+              class="field-input"
+              placeholder="http://localhost:8000 or https://xxx.supabase.co"
+            />
+            <button type="button" class="btn btn-test" onclick="testSupabase()">
+              Test
+            </button>
+          </div>
+          <div id="supabaseResult" class="test-result"></div>
+          <p class="help-text">Supabase project URL</p>
+        </div>
+        <div class="field">
+          <label class="field-label">
+            NEXT_PUBLIC_SUPABASE_ANON_KEY <span class="required">*</span>
+          </label>
+          <input
+            type="password"
+            id="NEXT_PUBLIC_SUPABASE_ANON_KEY"
+            class="field-input"
+            placeholder="eyJxxx..."
+          />
+          <p class="help-text">Supabase anonymous key</p>
+        </div>
+        <div class="field">
+          <label class="field-label">
+            SUPABASE_SERVICE_ROLE_KEY <span class="required">*</span>
+          </label>
+          <input
+            type="password"
+            id="SUPABASE_SERVICE_ROLE_KEY"
+            class="field-input"
+            placeholder="eyJxxx..."
+          />
+          <p class="help-text">Supabase service role key (for server-side operations)</p>
+        </div>
+      </div>
+
+      <!-- Webhook Security -->
+      <div class="section">
+        <div class="section-title">
+          <span>Webhook Security</span>
+        </div>
+        <div class="field">
+          <label class="field-label">
+            WEBHOOK_SECRET <span class="required">*</span>
+          </label>
+          <input
+            type="password"
+            id="WEBHOOK_SECRET"
+            class="field-input"
+            placeholder="32+ character random string"
+          />
+          <p class="help-text">Secret for webhook signature verification (must match Vercel)</p>
+        </div>
+      </div>
+
+      <!-- Other Settings -->
+      <div class="section">
+        <div class="section-title">
+          <span>Other Settings</span>
+        </div>
+        <div class="field">
+          <label class="field-label">
+            PROJECT_PATH
+          </label>
+          <input
+            type="text"
+            id="PROJECT_PATH"
+            class="field-input"
+            placeholder="/home/asce/projects/your-project"
+          />
+          <p class="help-text">Local project path for code testing</p>
+        </div>
+        <div class="field">
+          <label class="field-label">
+            SLACK_WEBHOOK_URL
+          </label>
+          <input
+            type="text"
+            id="SLACK_WEBHOOK_URL"
+            class="field-input"
+            placeholder="https://hooks.slack.com/services/..."
+          />
+          <p class="help-text">Slack webhook URL for notifications (optional)</p>
+        </div>
+      </div>
+
+      <button type="submit" class="btn btn-save-all">
+        💾 Save All Settings
+      </button>
+    </form>
+  </div>
+
+  <script>
+    // Mapping of env keys to status badge IDs
+    const STATUS_BADGE_MAP = {
+      'CURSOR_API_KEY': 'cursorApiStatus',
+      'REDIS_HOST': 'redisStatus',
+      'NEXT_PUBLIC_SUPABASE_URL': 'supabaseStatus'
+    };
+
+    // Required fields for each section
+    const REQUIRED_FIELDS = {
+      cursorApi: ['CURSOR_API_KEY'],
+      redis: ['REDIS_HOST'],
+      supabase: ['NEXT_PUBLIC_SUPABASE_URL', 'NEXT_PUBLIC_SUPABASE_ANON_KEY', 'SUPABASE_SERVICE_ROLE_KEY']
+    };
+
+    // Load current settings on page load
+    async function loadSettings() {
+      try {
+        const res = await fetch('/api/settings');
+        const data = await res.json();
+        if (data.success && data.data.raw) {
+          const env = data.data.raw;
+          
+          // Populate all input fields
+          for (const [key, value] of Object.entries(env)) {
+            const input = document.getElementById(key);
+            if (input && value) {
+              input.value = value;
+            }
+          }
+          
+          // Update status badges based on required fields
+          updateAllStatusBadges(env);
+        }
+      } catch (error) {
+        console.error('Failed to load settings', error);
+      }
+    }
+
+    // Update all status badges based on current values
+    function updateAllStatusBadges(env) {
+      // Cursor API status
+      const cursorApiConfigured = !!(env.CURSOR_API_KEY && env.CURSOR_API_KEY.trim());
+      updateStatusBadge('cursorApiStatus', cursorApiConfigured);
+      
+      // Redis status
+      const redisConfigured = !!(env.REDIS_HOST && env.REDIS_HOST.trim());
+      updateStatusBadge('redisStatus', redisConfigured);
+      
+      // Supabase status
+      const supabaseConfigured = !!(
+        env.NEXT_PUBLIC_SUPABASE_URL && env.NEXT_PUBLIC_SUPABASE_URL.trim() &&
+        env.NEXT_PUBLIC_SUPABASE_ANON_KEY && env.NEXT_PUBLIC_SUPABASE_ANON_KEY.trim() &&
+        env.SUPABASE_SERVICE_ROLE_KEY && env.SUPABASE_SERVICE_ROLE_KEY.trim()
+      );
+      updateStatusBadge('supabaseStatus', supabaseConfigured);
+    }
+
+    // Update status badge
+    function updateStatusBadge(badgeId, configured) {
+      const statusEl = document.getElementById(badgeId);
+      if (statusEl) {
+        statusEl.className = `status-badge ${configured ? 'configured' : 'missing'}`;
+        statusEl.innerHTML = `
+          <span class="status-dot ${configured ? 'configured' : 'missing'}"></span>
+          ${configured ? 'Configured' : 'Missing'}
+        `;
+      }
+    }
+
+    // Test Cursor API
+    async function testCursorApi() {
+      const apiKey = document.getElementById('CURSOR_API_KEY').value;
+      const resultEl = document.getElementById('cursorApiResult');
+      
+      if (!apiKey) {
+        resultEl.className = 'test-result error';
+        resultEl.textContent = 'Please enter CURSOR_API_KEY first';
+        return;
+      }
+
+      resultEl.className = 'test-result loading';
+      resultEl.textContent = 'Testing Cursor API connection...';
+
+      try {
+        const res = await fetch('/api/test/cursor-api', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ apiKey })
+        });
+        const data = await res.json();
+        
+        if (data.success) {
+          resultEl.className = 'test-result success';
+          resultEl.textContent = `✅ ${data.message}${data.data?.apiKeyName ? ` (${data.data.apiKeyName})` : ''}${data.data?.userEmail ? ` • ${data.data.userEmail}` : ''}`;
+          updateStatusBadge('cursorApiStatus', true);
+        } else {
+          resultEl.className = 'test-result error';
+          resultEl.textContent = `❌ ${data.error || 'Test failed'}`;
+        }
+      } catch (error) {
+        resultEl.className = 'test-result error';
+        resultEl.textContent = `❌ ${error.message || 'Failed to test Cursor API'}`;
+      }
+    }
+
+    // Test Redis
+    async function testRedis() {
+      const host = document.getElementById('REDIS_HOST').value;
+      const port = document.getElementById('REDIS_PORT').value;
+      const password = document.getElementById('REDIS_PASSWORD').value;
+      const resultEl = document.getElementById('redisResult');
+      
+      if (!host) {
+        resultEl.className = 'test-result error';
+        resultEl.textContent = 'Please enter REDIS_HOST first';
+        return;
+      }
+
+      resultEl.className = 'test-result loading';
+      resultEl.textContent = 'Testing Redis connection...';
+
+      try {
+        const res = await fetch('/api/test/redis', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ host, port, password })
+        });
+        const data = await res.json();
+        
+        if (data.success) {
+          resultEl.className = 'test-result success';
+          resultEl.textContent = `✅ ${data.message} (${data.data.host}:${data.data.port})`;
+          updateStatusBadge('redisStatus', true);
+        } else {
+          resultEl.className = 'test-result error';
+          resultEl.textContent = `❌ ${data.error || 'Test failed'}`;
+        }
+      } catch (error) {
+        resultEl.className = 'test-result error';
+        resultEl.textContent = `❌ ${error.message || 'Failed to test Redis'}`;
+      }
+    }
+
+    // Test Supabase
+    async function testSupabase() {
+      const url = document.getElementById('NEXT_PUBLIC_SUPABASE_URL').value;
+      const anonKey = document.getElementById('NEXT_PUBLIC_SUPABASE_ANON_KEY').value;
+      const serviceKey = document.getElementById('SUPABASE_SERVICE_ROLE_KEY').value;
+      const resultEl = document.getElementById('supabaseResult');
+      
+      if (!url || !anonKey) {
+        resultEl.className = 'test-result error';
+        resultEl.textContent = 'Please enter Supabase URL and Anon Key first';
+        return;
+      }
+
+      resultEl.className = 'test-result loading';
+      resultEl.textContent = 'Testing Supabase connection...';
+
+      try {
+        const res = await fetch('/api/test/supabase', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ url, anonKey, serviceKey })
+        });
+        const data = await res.json();
+        
+        if (data.success) {
+          resultEl.className = 'test-result success';
+          resultEl.textContent = `✅ ${data.message}`;
+          updateStatusBadge('supabaseStatus', true);
+        } else {
+          resultEl.className = 'test-result error';
+          resultEl.textContent = `❌ ${data.error || 'Test failed'}`;
+        }
+      } catch (error) {
+        resultEl.className = 'test-result error';
+        resultEl.textContent = `❌ ${error.message || 'Failed to test Supabase'}`;
+      }
+    }
+
+    // Save all settings
+    document.getElementById('settingsForm').addEventListener('submit', async (e) => {
+      e.preventDefault();
+      
+      const settings = {};
+      const inputs = document.querySelectorAll('.field-input');
+      inputs.forEach(input => {
+        if (input.id && input.value) {
+          settings[input.id] = input.value;
+        }
+      });
+
+      try {
+        const res = await fetch('/api/settings', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(settings)
+        });
+        const data = await res.json();
+        
+        if (data.success) {
+          alert('✅ Settings saved successfully!');
+          // Reload settings to update all badges
+          loadSettings();
+        } else {
+          alert(`❌ Failed to save: ${data.error || 'Unknown error'}`);
+        }
+      } catch (error) {
+        alert(`❌ Error: ${error.message || 'Failed to save settings'}`);
+      }
+    });
+
+    // Load settings on page load
+    // Use DOMContentLoaded to ensure DOM is ready
+    if (document.readyState === 'loading') {
+      document.addEventListener('DOMContentLoaded', loadSettings);
+    } else {
+      // DOM is already ready
+      loadSettings();
+    }
+  </script>
+</body>
+</html>

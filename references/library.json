@@ -1,0 +1,49 @@
+{
+  "generatedAt": "2025-12-18T04:22:10.247Z",
+  "entries": [
+    {
+      "name": "Cursor Cloud Agents API - List Agents",
+      "url": "https://cursor.com/docs/cloud-agent/api/endpoints#list-agents",
+      "title": "Cloud Agents API | Cursor Docs",
+      "headings": [],
+      "fetchedAt": "2025-12-18T04:22:10.247Z",
+      "basics": {
+        "kind": "cursor-cloud-agents-list",
+        "summary": "List all Cursor Cloud Agents for the authenticated API key.",
+        "endpoint": {
+          "method": "GET",
+          "path": "/v0/agents",
+          "description": "Returns a paginated list of cloud agents associated with the API key.",
+          "auth": {
+            "type": "basic",
+            "headerExample": "Authorization: Basic <base64(YOUR_API_KEY:)>",
+            "curlExample": "curl --request GET \\n  --url https://api.cursor.com/v0/agents \\\n  -u YOUR_API_KEY:"
+          },
+          "queryParameters": [
+            {
+              "name": "limit",
+              "type": "number",
+              "description": "Maximum number of agents to return. Default: implementation-specific; respect server limits."
+            },
+            {
+              "name": "cursor",
+              "type": "string",
+              "description": "Pagination cursor returned from a previous List Agents response."
+            }
+          ],
+          "responseShape": {
+            "successExample": {
+              "agents": "[{ id, name, status, ... }, ...]",
+              "cursor": "string | null (next page token)"
+            }
+          }
+        },
+        "usageNotes": [
+          "Use Basic Auth where the API key is the username and the password is empty (i.e. \"YOUR_API_KEY:\").",
+          "Always handle pagination via the returned cursor to avoid missing agents.",
+          "Never log raw API keys; store them in environment variables and pass them via headers only."
+        ]
+      }
+    }
+  ]
+}
