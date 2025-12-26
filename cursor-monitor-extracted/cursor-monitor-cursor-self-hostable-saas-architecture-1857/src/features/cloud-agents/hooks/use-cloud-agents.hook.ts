@@ -76,6 +76,7 @@ export function useCloudAgents(options: UseCloudAgentsOptions = {}): {
   const consecutiveErrorsRef = useRef<number>(0);
   const isPollingPausedRef = useRef<boolean>(false);
   const loadConversationLockRef = useRef<boolean>(false);
+  const lastLoadTimeRef = useRef<number>(0);
 
   const loadUserInfo = useCallback(async (): Promise<void> => {
     if (!apiKey && !configId) {
@@ -200,14 +201,14 @@ export function useCloudAgents(options: UseCloudAgentsOptions = {}): {
     replacedTempIds: Set<string>;
     newMessageIds: string[];
   }> => {
-    // Prevent multiple simultaneous loads for same agent
-    if (loadConversationLockRef.current) {
+    // Rate limiting: prevent more than one request per 500ms
+    const now = Date.now();
+    if (now - lastLoadTimeRef.current < 500) {
       return { hasNewMessages: false, newMessageCount: 0, replacedTempIds: new Set(), newMessageIds: [] };
     }
+    lastLoadTimeRef.current = now;
 
-    loadConversationLockRef.current = true;
-
-    // Cancel any pending request
+    // Create new AbortController for this request
     if (abortControllerRef.current) {
       abortControllerRef.current.abort();
     }
@@ -245,7 +246,6 @@ export function useCloudAgents(options: UseCloudAgentsOptions = {}): {
 
       // If no changes, don't call setState at all (prevents re-render)
       if (!hasChanges) {
-        loadConversationLockRef.current = false;
         return { hasNewMessages: false, newMessageCount: 0, replacedTempIds: new Set(), newMessageIds: [] };
       }
 
@@ -264,7 +264,6 @@ export function useCloudAgents(options: UseCloudAgentsOptions = {}): {
         const { new: actualNew, replacedTempIds: actualReplaced } = findNewMessages(msgs, newMessages);
 
         if (actualNew.length === 0 && actualReplaced.size === 0) {
-          loadConversationLockRef.current = false;
           return prev;
         }
 
@@ -369,7 +368,6 @@ export function useCloudAgents(options: UseCloudAgentsOptions = {}): {
         };
       });
 
-      loadConversationLockRef.current = false;
       return {
         hasNewMessages: genuinelyNew.length > 0 || replacedTempIds.size > 0,
         newMessageCount: genuinelyNew.length,
@@ -377,7 +375,6 @@ export function useCloudAgents(options: UseCloudAgentsOptions = {}): {
         newMessageIds
       };
     } catch (error) {
-      loadConversationLockRef.current = false;
       if (error instanceof Error && error.name === 'AbortError') {
         return { hasNewMessages: false, newMessageCount: 0, replacedTempIds: new Set(), newMessageIds: [] };
       }
