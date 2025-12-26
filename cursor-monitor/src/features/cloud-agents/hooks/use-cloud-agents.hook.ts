@@ -170,6 +170,50 @@ export function useCloudAgents(options: UseCloudAgentsOptions = {}): {
       const data = await fetchCloudAgentConversation(agentId, apiKey ? { apiKey } : { configId }, controller.signal);
       const newMessages = data.messages ?? [];
 
+      // Get current state for comparison (outside setState to avoid unnecessary renders)
+      let currentStateSnapshot: UseCloudAgentsState | null = null;
+      setState((prev) => {
+        currentStateSnapshot = prev;
+        return prev;
+      });
+
+      if (currentStateSnapshot) {
+        const currentConversation = currentStateSnapshot.conversationsByAgentId[agentId] ?? currentStateSnapshot.conversation;
+        const currentMessages = currentConversation?.messages ?? [];
+
+        // Early exit: no changes detected, skip setState entirely
+        if (newMessages.length === currentMessages.length) {
+          const lastCurrent = currentMessages[currentMessages.length - 1];
+          const lastNew = newMessages[newMessages.length - 1];
+
+          if (lastCurrent?.id && lastNew?.id && lastCurrent.id === lastNew.id) {
+            // Reset error count on success
+            consecutiveErrorsRef.current = 0;
+            currentPollIntervalRef.current = 3000;
+            return {
+              hasNewMessages: false,
+              newMessageCount: 0,
+              replacedTempIds: new Set()
+            };
+          }
+        }
+
+        // Find genuinely new messages
+        const { new: genuinelyNew, replacedTempIds } = findNewMessages(currentMessages, newMessages);
+
+        if (genuinelyNew.length === 0 && replacedTempIds.size === 0) {
+          // No actual changes, skip setState to prevent re-render
+          consecutiveErrorsRef.current = 0;
+          currentPollIntervalRef.current = 3000;
+          return {
+            hasNewMessages: false,
+            newMessageCount: 0,
+            replacedTempIds: new Set()
+          };
+        }
+      }
+
+      // There are changes, proceed with setState
       let result: {
         hasNewMessages: boolean;
         newMessageCount: number;
@@ -180,29 +224,8 @@ export function useCloudAgents(options: UseCloudAgentsOptions = {}): {
         const currentConversation = prev.conversationsByAgentId[agentId] ?? prev.conversation;
         const currentMessages = currentConversation?.messages ?? [];
 
-        // Early exit: no changes
-        if (newMessages.length === currentMessages.length) {
-          // Check if last message ID matches (most common case)
-          const lastCurrent = currentMessages[currentMessages.length - 1];
-          const lastNew = newMessages[newMessages.length - 1];
-
-          if (lastCurrent?.id && lastNew?.id && lastCurrent.id === lastNew.id) {
-            // Reset error count on success
-            consecutiveErrorsRef.current = 0;
-            currentPollIntervalRef.current = 3000; // Reset to base interval
-            return prev;
-          }
-        }
-
         // Find genuinely new messages
         const { new: genuinelyNew, replacedTempIds } = findNewMessages(currentMessages, newMessages);
-
-        if (genuinelyNew.length === 0 && replacedTempIds.size === 0) {
-          // No actual changes
-          consecutiveErrorsRef.current = 0;
-          currentPollIntervalRef.current = 3000;
-          return prev;
-        }
 
         // Create merged messages preserving order
         const messageMap = new Map<string, any>();

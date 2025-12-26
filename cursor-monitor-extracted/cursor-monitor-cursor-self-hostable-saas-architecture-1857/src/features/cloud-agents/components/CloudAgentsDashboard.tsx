@@ -409,6 +409,7 @@ export const CloudAgentsDashboard: FC<CloudAgentsDashboardProps> = ({ initialCon
   const previousMessageIdsRef = useRef<Set<string>>(new Set());
   const isUserScrolledUpRef = useRef<boolean>(false);
   const lastAutoScrollTimeRef = useRef<number>(0);
+  const pendingMessageCountRef = useRef<number>(0);
   const [showNewMessagesButton, setShowNewMessagesButton] = useState(false);
   const [firstUnreadId, setFirstUnreadId] = useState<string | undefined>(undefined);
 
@@ -552,6 +553,11 @@ export const CloudAgentsDashboard: FC<CloudAgentsDashboardProps> = ({ initialCon
     }
   }, [state.selectedAgentId]);
 
+  // Update ref when pendingMessageCount changes (for use in scroll callbacks)
+  useEffect(() => {
+    pendingMessageCountRef.current = state.pendingMessageCount;
+  }, [state.pendingMessageCount]);
+
   // Debounce search query
   useEffect(() => {
     const timer = setTimeout(() => {
@@ -617,13 +623,17 @@ export const CloudAgentsDashboard: FC<CloudAgentsDashboardProps> = ({ initialCon
     const wasScrolledUp = isUserScrolledUpRef.current;
     isUserScrolledUpRef.current = !isAtBottom;
 
-    const shouldShowButton = !isAtBottom && state.pendingMessageCount > 0;
+    // Use ref for current pending count to avoid stale closures
+    const pendingCount = pendingMessageCountRef.current;
+    const shouldShowButton = !isAtBottom && pendingCount > 0;
     setShowNewMessagesButton(shouldShowButton);
 
-    if (wasScrolledUp && isAtBottom && state.pendingMessageCount > 0) {
-      markMessagesRead(state.pendingMessageCount);
+    // Auto-mark as read when scrolling to bottom
+    if (wasScrolledUp && isAtBottom && pendingCount > 0) {
+      // Only mark messages as read if we haven't already handled them
+      markMessagesRead(pendingCount);
     }
-  }, [state.pendingMessageCount, markMessagesRead]);
+  }, [markMessagesRead]);
 
   const scrollToFirstUnread = useCallback(() => {
     if (firstUnreadId) {
