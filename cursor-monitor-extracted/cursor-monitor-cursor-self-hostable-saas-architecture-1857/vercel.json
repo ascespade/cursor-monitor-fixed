@@ -1,0 +1,12 @@
+# Vercel Build Configuration
+{
+  "buildCommand": "npm run vercel-build",
+  "outputDirectory": ".next",
+  "framework": "nextjs",
+  "installCommand": "npm install",
+  "devCommand": "npm run dev",
+  "regions": ["iad1"],
+  "cache": {
+    "zero": true
+  }
+}
