@@ -492,8 +492,24 @@ export function useCloudAgents(options: UseCloudAgentsOptions = {}): {
         newUnreadIds.add(newMessage.id);
       }
 
+      // Update agent status to RUNNING immediately when user sends a message
+      const updatedAgents = prev.agents.map((agent) => {
+        if (agent.id === agentId && agent.status !== 'RUNNING') {
+          return {
+            ...agent,
+            status: 'RUNNING' as const
+          };
+        }
+        return agent;
+      });
+
+      // Reset polling interval for faster updates
+      currentPollIntervalRef.current = 2000;
+      consecutiveErrorsRef.current = 0;
+
       return {
         ...prev,
+        agents: updatedAgents,
         conversation: agentId === prev.selectedAgentId ? updatedConversation : prev.conversation,
         conversationsByAgentId: {
           ...prev.conversationsByAgentId,
