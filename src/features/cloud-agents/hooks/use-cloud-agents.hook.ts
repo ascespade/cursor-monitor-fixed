@@ -1,12 +1,10 @@
 /**
- * useCloudAgents - Simplified Chat Behavior System
+ * useCloudAgents - Smart Message Fetching
  *
  * Purpose:
- * - Clean, predictable chat experience
- * - When opening chat: fetch messages and scroll to last message
- * - When sending message: add automatically to chat
- * - When agent RUNNING: poll for new messages in background and add them
- * - Simple tracking - no confusing "new messages" count
+ * - First load: fetch ALL messages and store count
+ * - Background poll: fetch ALL, compare counts, add ONLY new messages (the difference)
+ * - No re-adding existing messages
  */
 'use client';
 
@@ -40,8 +38,8 @@ interface UseCloudAgentsState {
     userEmail?: string;
   };
   isConversationLoading: boolean;
-  // Simple message tracking - only track which messages we received in current session
-  lastKnownMessageIds: Set<string>;
+  // Track message count per agent to detect new messages efficiently
+  messageCountByAgentId: Record<string, number>;
 }
 
 export function useCloudAgents(options: UseCloudAgentsOptions = {}): {
@@ -57,7 +55,7 @@ export function useCloudAgents(options: UseCloudAgentsOptions = {}): {
     conversationsByAgentId: {},
     loading: false,
     userInfoLoading: false,
-    lastKnownMessageIds: new Set(),
+    messageCountByAgentId: {},
     isConversationLoading: false
   });
 
@@ -109,37 +107,8 @@ export function useCloudAgents(options: UseCloudAgentsOptions = {}): {
     }
   }, [apiKey, configId]);
 
-  // Get truly new messages that should be added
-  const getNewMessages = useCallback((
-    currentMessages: any[],
-    newMessages: any[]
-  ): { newMessages: any[]; replacedTempIds: Set<string> } => {
-    const newMsgs: any[] = [];
-    const replacedTempIds = new Set<string>();
-    const currentIds = new Set(currentMessages.map(m => m.id).filter(Boolean));
-
-    for (const msg of newMessages) {
-      // Skip if we already have this message (by ID)
-      if (msg.id && currentIds.has(msg.id)) {
-        // Check if this real message replaces a temp message
-        const tempMsg = currentMessages.find(
-          m => m.id?.startsWith('temp-') && m.type === msg.type && m.text === msg.text
-        );
-        if (tempMsg) {
-          replacedTempIds.add(tempMsg.id);
-        }
-        continue;
-      }
-
-      // This is a genuinely new message
-      newMsgs.push(msg);
-    }
-
-    return { newMessages: newMsgs, replacedTempIds };
-  }, []);
-
   // Load conversation for an agent
-  const loadConversation = useCallback(async (agentId: string, isInitialLoad = false): Promise<void> => {
+  const loadConversation = useCallback(async (agentId: string, isInitialLoad = true): Promise<void> => {
     // Cancel any pending request
     if (abortControllerRef.current) {
       abortControllerRef.current.abort();
@@ -151,50 +120,54 @@ export function useCloudAgents(options: UseCloudAgentsOptions = {}): {
     try {
       const data = await fetchCloudAgentConversation(agentId, apiKey ? { apiKey } : { configId }, controller.signal);
       const serverMessages = data.messages ?? [];
+      const serverMessageCount = serverMessages.length;
 
       setState((prev) => {
-        // Get current messages
         const currentConversation = prev.conversationsByAgentId[agentId] ?? prev.conversation;
         const currentMessages = currentConversation?.messages ?? [];
+        const currentMessageCount = currentMessages.length;
 
-        // Get new messages
-        const { newMessages, replacedTempIds } = getNewMessages(currentMessages, serverMessages);
+        // Get last known count for this agent
+        const lastKnownCount = prev.messageCountByAgentId[agentId] ?? currentMessageCount;
 
-        // Build merged messages array
-        let mergedMessages: any[];
+        if (isInitialLoad) {
+          // First load: take ALL messages and update count
+          const updatedConversation: CursorConversationResponse = {
+            ...data,
+            messages: serverMessages
+          };
 
-        if (newMessages.length === 0 && replacedTempIds.size === 0) {
-          // No changes - keep current messages
-          mergedMessages = currentMessages;
-        } else {
-          // Remove replaced temp messages
-          const filteredMessages = currentMessages.filter(
-            m => !(m.id && replacedTempIds.has(m.id))
-          );
-
-          // Add new messages
-          mergedMessages = [...filteredMessages, ...newMessages];
-
-          // Sort by createdAt
-          mergedMessages.sort((a, b) => {
-            const aTime = (a as { createdAt?: string })['createdAt']
-              ? new Date((a as { createdAt?: string })['createdAt']!).getTime() : 0;
-            const bTime = (b as { createdAt?: string })['createdAt']
-              ? new Date((b as { createdAt?: string })['createdAt']!).getTime() : 0;
-            return aTime - bTime;
-          });
+          return {
+            ...prev,
+            conversation: agentId === prev.selectedAgentId ? updatedConversation : prev.conversation,
+            conversationsByAgentId: {
+              ...prev.conversationsByAgentId,
+              [agentId]: updatedConversation
+            },
+            messageCountByAgentId: {
+              ...prev.messageCountByAgentId,
+              [agentId]: serverMessageCount
+            },
+            isConversationLoading: false
+          };
         }
 
-        // Track which message IDs we know about
-        const lastKnownIds = new Set(prev.lastKnownMessageIds);
-        mergedMessages.forEach(m => {
-          if (m.id) lastKnownIds.add(m.id);
-        });
+        // Background poll: only add NEW messages (difference between counts)
+        if (serverMessageCount <= lastKnownCount) {
+          // No new messages or messages were removed - do nothing
+          return prev;
+        }
 
-        // Update state
+        // Calculate how many new messages to add
+        const newMessagesCount = serverMessageCount - lastKnownCount;
+        const newMessages = serverMessages.slice(lastKnownCount, serverMessageCount);
+
+        // Add only the new messages to the end
+        const updatedMessages = [...currentMessages, ...newMessages];
+
         const updatedConversation: CursorConversationResponse = {
           ...data,
-          messages: mergedMessages
+          messages: updatedMessages
         };
 
         return {
@@ -204,7 +177,10 @@ export function useCloudAgents(options: UseCloudAgentsOptions = {}): {
             ...prev.conversationsByAgentId,
             [agentId]: updatedConversation
           },
-          lastKnownMessageIds: lastKnownIds,
+          messageCountByAgentId: {
+            ...prev.messageCountByAgentId,
+            [agentId]: serverMessageCount
+          },
           isConversationLoading: false
         };
       });
@@ -216,7 +192,7 @@ export function useCloudAgents(options: UseCloudAgentsOptions = {}): {
       const message = error instanceof Error ? error.message : 'Failed to load conversation';
       setState((prev) => ({ ...prev, error: message, isConversationLoading: false }));
     }
-  }, [apiKey, configId, getNewMessages]);
+  }, [apiKey, configId]);
 
   // Select an agent - fetch conversation and prepare for polling
   const selectAgent = useCallback(async (id: string): Promise<void> => {
@@ -246,7 +222,7 @@ export function useCloudAgents(options: UseCloudAgentsOptions = {}): {
 
     currentAgentIdRef.current = id;
 
-    // Fetch conversation immediately
+    // Fetch conversation immediately (will set message count)
     await loadConversation(id, true);
   }, [loadConversation]);
 
@@ -254,14 +230,14 @@ export function useCloudAgents(options: UseCloudAgentsOptions = {}): {
   const refresh = useCallback(async (): Promise<void> => {
     await loadAgents();
     if (state.selectedAgentId) {
-      await loadConversation(state.selectedAgentId);
+      await loadConversation(state.selectedAgentId, true);
     }
   }, [loadAgents, loadConversation, state.selectedAgentId]);
 
   // Force refresh conversation
   const refreshConversation = useCallback(async (): Promise<void> => {
     if (state.selectedAgentId) {
-      await loadConversation(state.selectedAgentId);
+      await loadConversation(state.selectedAgentId, true);
     }
   }, [loadConversation, state.selectedAgentId]);
 
@@ -307,6 +283,9 @@ export function useCloudAgents(options: UseCloudAgentsOptions = {}): {
         return agent;
       });
 
+      // Update message count
+      const newCount = (prev.messageCountByAgentId[agentId] ?? existingMessages.length) + 1;
+
       return {
         ...prev,
         agents: updatedAgents,
@@ -314,18 +293,23 @@ export function useCloudAgents(options: UseCloudAgentsOptions = {}): {
         conversationsByAgentId: {
           ...prev.conversationsByAgentId,
           [agentId]: updatedConversation
+        },
+        messageCountByAgentId: {
+          ...prev.messageCountByAgentId,
+          [agentId]: newCount
         }
       };
     });
   }, []);
 
-  // Mark all messages as read (clears any tracking)
+  // Mark all messages as read (resets tracking to current count)
   const markAllMessagesRead = useCallback((): void => {
     setState((prev) => ({
       ...prev,
-      lastKnownMessageIds: new Set<string>(
-        (prev.conversation?.messages ?? []).map(m => m.id).filter((id): id is string => Boolean(id))
-      )
+      messageCountByAgentId: {
+        ...prev.messageCountByAgentId,
+        [prev.selectedAgentId ?? '']: (prev.conversation?.messages ?? []).length
+      }
     }));
   }, []);
 
@@ -376,6 +360,7 @@ export function useCloudAgents(options: UseCloudAgentsOptions = {}): {
         return;
       }
 
+      // Fetch and add only NEW messages (isInitialLoad = false)
       await loadConversation(agentId, false);
 
       // Schedule next poll only if still polling
