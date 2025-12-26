@@ -17,7 +17,7 @@
 'use client';
 
 import type { FC, ReactNode } from 'react';
-import { useEffect, useRef, useState, useCallback, useMemo } from 'react';
+import { useEffect, useRef, useState, useCallback, useMemo, memo } from 'react';
 
 import { useCloudAgents } from '@/features/cloud-agents/hooks/use-cloud-agents.hook';
 import { EmptyState } from '@/shared/components/EmptyState';
@@ -229,7 +229,7 @@ const AgentCard: FC<AgentCardProps> = ({
 };
 
 // ============================================================================
-// Message Component
+// Message Component - Memoized for performance
 // ============================================================================
 
 interface MessageItemProps {
@@ -240,7 +240,15 @@ interface MessageItemProps {
   onCopyFull: (id: string, text: string) => void;
 }
 
-const MessageItem: FC<MessageItemProps> = ({ message, isUnread, copiedId, onCopy, onCopyFull }) => {
+// Stable ID generator for messages
+function getMessageStableId(message: CursorConversationMessage): string {
+  // Prefer real ID, fallback to temp ID based on content and creation time
+  if (message.id) return message.id;
+  const textSnippet = (message.text ?? '').slice(0, 50);
+  return `temp-${message.type}-${textSnippet}-${(message as { createdAt?: string })['createdAt'] ?? 'no-time'}`;
+}
+
+const MessageItem: FC<MessageItemProps> = memo(({ message, isUnread, copiedId, onCopy, onCopyFull }) => {
   const isUser = message.type === 'user_message';
   const createdAt = typeof message['createdAt'] === 'string'
     ? new Date(message['createdAt']).toLocaleString('en-US', {
@@ -348,7 +356,9 @@ const MessageItem: FC<MessageItemProps> = ({ message, isUnread, copiedId, onCopy
       </div>
     </div>
   );
-};
+});
+
+MessageItem.displayName = 'MessageItem';
 
 // ============================================================================
 // Loading Skeleton Component
@@ -1310,7 +1320,7 @@ export const CloudAgentsDashboard: FC<CloudAgentsDashboardProps> = ({ initialCon
                 {/* Message List */}
                 {state.conversation.messages.map((msg) => (
                   <MessageItem
-                    key={msg.id ?? `${msg.type}-${Math.random()}`}
+                    key={getMessageStableId(msg)}
                     message={msg}
                     isUnread={msg.id ? state.unreadMessageIds.has(msg.id) && !msg.id.startsWith('temp-') : false}
                     copiedId={copiedMessageId}
