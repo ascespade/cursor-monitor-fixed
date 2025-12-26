@@ -442,38 +442,36 @@ export function useCloudAgents(options: UseCloudAgentsOptions = {}): {
     };
   }, [configId, apiKey, pollIntervalMs, loadUserInfo, loadAgents]);
 
-  // Enhanced conversation polling with visibility awareness
+  // Enhanced conversation polling - ONLY poll when agent is RUNNING
+  // When agent is FINISHED or ERROR, no new messages will come
   useEffect(() => {
     if (!state.selectedAgentId || !conversationPollIntervalMs || conversationPollIntervalMs <= 0) {
       return;
     }
 
-    // Use ref to track current selected agent without causing re-renders
+    // Only poll if agent is RUNNING
     const currentAgentId = state.selectedAgentId;
-
-    // Find the selected agent using a ref-like approach to avoid deps changes
     const selectedAgent = state.agents.find((a) => a.id === currentAgentId);
     const isRunning = selectedAgent?.status === 'RUNNING';
-    const isFinished = selectedAgent?.status === 'FINISHED';
-    const isError = selectedAgent?.status === 'ERROR';
 
-    if (!isRunning && !isFinished && !isError) {
+    // If not running, don't poll at all
+    if (!isRunning) {
       return;
     }
 
     let pollCount = 0;
-    const maxPollCount = isRunning ? Infinity : 6;
+    const maxPollCount = Infinity; // Keep polling while running
 
     const runPoll = async () => {
       if (!state.selectedAgentId || state.selectedAgentId !== currentAgentId) return;
 
       const result = await loadConversation(state.selectedAgentId, true);
 
-      // Only increment poll count if we actually got new messages
-      if (result.hasNewMessages) {
-        pollCount = 0; // Reset on new messages
-      } else {
+      // Only increment poll count if no new messages (we're just checking)
+      if (!result.hasNewMessages) {
         pollCount++;
+      } else {
+        pollCount = 0; // Reset on new messages
       }
 
       if (pollCount > maxPollCount) {
@@ -481,7 +479,7 @@ export function useCloudAgents(options: UseCloudAgentsOptions = {}): {
       }
 
       // Calculate next poll interval with exponential backoff
-      const baseInterval = isRunning ? conversationPollIntervalMs : 10000;
+      const baseInterval = conversationPollIntervalMs;
       const nextInterval = Math.min(baseInterval + consecutiveErrorsRef.current * 1000, 30000);
 
       pollTimeoutRef.current = setTimeout(runPoll, nextInterval);
@@ -498,7 +496,7 @@ export function useCloudAgents(options: UseCloudAgentsOptions = {}): {
         abortControllerRef.current.abort();
       }
     };
-  }, [state.selectedAgentId, conversationPollIntervalMs, configId, apiKey, loadConversation]);
+  }, [state.selectedAgentId, state.agents, conversationPollIntervalMs, configId, apiKey, loadConversation]);
 
   // Pause polling when tab is not visible (save resources)
   useEffect(() => {

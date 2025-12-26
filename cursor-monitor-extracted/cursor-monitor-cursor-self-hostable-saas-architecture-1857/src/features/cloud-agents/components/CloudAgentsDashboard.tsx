@@ -397,6 +397,7 @@ export const CloudAgentsDashboard: FC<CloudAgentsDashboardProps> = ({ initialCon
   }, [state.selectedAgentId, state.conversation?.messages, state.pendingMessageCount]);
 
   // Scroll on agent selection change (only when selecting, not when deselecting)
+  // IMPORTANT: Open directly at bottom without going to top first
   useEffect(() => {
     if (state.selectedAgentId && conversationEndRef.current) {
       // Reset scroll tracking on new agent selection
@@ -405,12 +406,13 @@ export const CloudAgentsDashboard: FC<CloudAgentsDashboardProps> = ({ initialCon
       previousMessageIdsRef.current = new Set();
       lastAutoScrollTimeRef.current = 0;
 
-      requestAnimationFrame(() => {
-        conversationEndRef.current?.scrollIntoView({
-          behavior: 'smooth',
-          block: 'end'
-        });
-      });
+      // Open directly at bottom without animating from top
+      // This prevents the "jump to top then scroll down" effect
+      setTimeout(() => {
+        if (conversationEndRef.current) {
+          conversationEndRef.current.scrollIntoView({ behavior: 'auto', block: 'end' });
+        }
+      }, 0);
     }
   }, [state.selectedAgentId]);
 
