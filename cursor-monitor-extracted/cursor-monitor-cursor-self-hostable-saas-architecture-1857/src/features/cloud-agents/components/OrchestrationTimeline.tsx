@@ -35,7 +35,7 @@ export function OrchestrationTimeline({ timeline, orchestrationId, humanizedErro
     for (const step of timeline) {
       for (let i = step.logs.length - 1; i >= 0; i--) {
         const log = step.logs[i];
-        if (log.level === 'error' && log.created_at > latestTimestamp) {
+        if (log && log.level === 'error' && log.created_at > latestTimestamp) {
           latestTimestamp = log.created_at;
           latestError = { step, log, index: i };
         }
