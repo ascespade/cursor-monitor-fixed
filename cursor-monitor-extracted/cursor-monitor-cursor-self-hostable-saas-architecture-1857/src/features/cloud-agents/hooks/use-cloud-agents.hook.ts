@@ -1,11 +1,12 @@
 /**
- * useCloudAgents - MiniMax-style Optimized Chat Behavior
+ * useCloudAgents - Professional Chat Behavior System
  *
  * Purpose:
  * - Manage Cursor Cloud Agents with polished chat experience
- * - Eliminate flickering and re-rendering issues
+ * - Full unread messages tracking with decreasing counter
  * - Smart polling with exponential backoff and request cancellation
  * - Seamless message updates without full re-renders
+ * - Professional UX matching MiniMax chat standards
  */
 'use client';
 
@@ -38,8 +39,11 @@ interface UseCloudAgentsState {
     apiKeyName?: string;
     userEmail?: string;
   };
-  // New: Track if we have pending updates
+  // Professional unread messages tracking system
   pendingMessageCount: number;
+  unreadMessageIds: Set<string>; // Track specific unread message IDs
+  lastReadTimestamp: number; // Timestamp of last read for this conversation
+  isConversationLoading: boolean; // Loading state for conversation loading
 }
 
 export function useCloudAgents(options: UseCloudAgentsOptions = {}): {
@@ -48,26 +52,30 @@ export function useCloudAgents(options: UseCloudAgentsOptions = {}): {
   refresh: () => Promise<void>;
   refreshConversation: () => Promise<void>;
   addMessageToConversation: (agentId: string, message: { type: string; text: string; id?: string; createdAt?: string }) => void;
-  markMessagesRead: () => void;
+  markMessagesRead: (count?: number) => void;
+  markAllMessagesRead: () => void;
+  scrollToFirstUnread: () => void;
 } {
   const [state, setState] = useState<UseCloudAgentsState>({
     agents: [],
     conversationsByAgentId: {},
     loading: false,
     userInfoLoading: false,
-    pendingMessageCount: 0
+    pendingMessageCount: 0,
+    unreadMessageIds: new Set(),
+    lastReadTimestamp: 0,
+    isConversationLoading: false
   });
 
-  const { configId, apiKey, pollIntervalMs, conversationPollIntervalMs = 3000 } = options;
+  const { configId, apiKey, pollIntervalMs, conversationPollIntervalMs = 2000 } = options;
 
   // Refs for polling management
   const abortControllerRef = useRef<AbortController | null>(null);
   const pollTimeoutRef = useRef<NodeJS.Timeout | null>(null);
-  const currentPollIntervalRef = useRef<number>(3000); // Start with 3 seconds
+  const currentPollIntervalRef = useRef<number>(2000);
   const consecutiveErrorsRef = useRef<number>(0);
-  const lastMessageCountRef = useRef<number>(0);
   const isPollingPausedRef = useRef<boolean>(false);
-  const lastFetchedMessageIdsRef = useRef<Set<string>>(new Set());
+  const loadConversationLockRef = useRef<boolean>(false);
 
   const loadUserInfo = useCallback(async (): Promise<void> => {
     if (!apiKey && !configId) {
@@ -106,9 +114,6 @@ export function useCloudAgents(options: UseCloudAgentsOptions = {}): {
       setState((prev) => ({ ...prev, loading: false, error: message }));
     }
   }, [apiKey, configId]);
-
-  // Ref to track last conversation for comparison (avoid unnecessary re-renders)
-  const lastConversationRef = useRef<CursorConversationResponse | null>(null);
 
   // Enhanced message comparison - only detect genuinely new messages
   const findNewMessages = useCallback((
@@ -193,7 +198,15 @@ export function useCloudAgents(options: UseCloudAgentsOptions = {}): {
     hasNewMessages: boolean;
     newMessageCount: number;
     replacedTempIds: Set<string>;
+    newMessageIds: string[];
   }> => {
+    // Prevent multiple simultaneous loads for same agent
+    if (loadConversationLockRef.current) {
+      return { hasNewMessages: false, newMessageCount: 0, replacedTempIds: new Set(), newMessageIds: [] };
+    }
+
+    loadConversationLockRef.current = true;
+
     // Cancel any pending request
     if (abortControllerRef.current) {
       abortControllerRef.current.abort();
@@ -206,16 +219,12 @@ export function useCloudAgents(options: UseCloudAgentsOptions = {}): {
       const data = await fetchCloudAgentConversation(agentId, apiKey ? { apiKey } : { configId }, controller.signal);
       const newMessages = data.messages ?? [];
 
-      // Get current messages from state (without triggering update)
-      // We'll read this synchronously after the fetch
+      // Get current messages from state
       let currentMessages: any[] = [];
-      let currentConversationRefValue: CursorConversationResponse | undefined;
-
-      // Use a one-time effect pattern: we'll set state only if needed
       setState((prev) => {
-        currentConversationRefValue = prev.conversationsByAgentId[agentId] ?? prev.conversation;
-        currentMessages = currentConversationRefValue?.messages ?? [];
-        return prev; // Don't actually update here
+        const currentConv = prev.conversationsByAgentId[agentId] ?? prev.conversation;
+        currentMessages = currentConv?.messages ?? [];
+        return prev;
       });
 
       currentMessages = currentMessages || [];
@@ -225,12 +234,26 @@ export function useCloudAgents(options: UseCloudAgentsOptions = {}): {
 
       // Reset error tracking on success
       consecutiveErrorsRef.current = 0;
-      currentPollIntervalRef.current = 3000;
+      currentPollIntervalRef.current = 2000;
+
+      // Get current unread IDs
+      let currentUnreadIds: Set<string> = new Set();
+      setState((prev) => {
+        currentUnreadIds = new Set(prev.unreadMessageIds);
+        return prev;
+      });
 
       // If no changes, don't call setState at all (prevents re-render)
       if (!hasChanges) {
-        return { hasNewMessages: false, newMessageCount: 0, replacedTempIds: new Set() };
+        loadConversationLockRef.current = false;
+        return { hasNewMessages: false, newMessageCount: 0, replacedTempIds: new Set(), newMessageIds: [] };
       }
+
+      // Identify truly new message IDs (not replacements)
+      const newMessageIds = genuinelyNew
+        .filter(m => !m.id?.startsWith('temp-') && !currentUnreadIds.has(m.id))
+        .map(m => m.id)
+        .filter((id): id is string => Boolean(id));
 
       // There are changes - update state
       setState((prev) => {
@@ -241,7 +264,8 @@ export function useCloudAgents(options: UseCloudAgentsOptions = {}): {
         const { new: actualNew, replacedTempIds: actualReplaced } = findNewMessages(msgs, newMessages);
 
         if (actualNew.length === 0 && actualReplaced.size === 0) {
-          return prev; // Double-check: still no changes
+          loadConversationLockRef.current = false;
+          return prev;
         }
 
         // Create merged messages preserving order
@@ -285,6 +309,14 @@ export function useCloudAgents(options: UseCloudAgentsOptions = {}): {
           messages: mergedMessages
         };
 
+        // Update unread tracking - only add genuinely new messages
+        const newUnreadIds = new Set(prev.unreadMessageIds);
+        genuinelyNew.forEach((msg) => {
+          if (msg.id && !msg.id.startsWith('temp-')) {
+            newUnreadIds.add(msg.id);
+          }
+        });
+
         return {
           ...prev,
           conversation: agentId === prev.selectedAgentId ? updatedConversation : prev.conversation,
@@ -292,30 +324,35 @@ export function useCloudAgents(options: UseCloudAgentsOptions = {}): {
             ...prev.conversationsByAgentId,
             [agentId]: updatedConversation
           },
-          pendingMessageCount: prev.pendingMessageCount + actualNew.length
+          pendingMessageCount: newUnreadIds.size,
+          unreadMessageIds: newUnreadIds,
+          isConversationLoading: false
         };
       });
 
+      loadConversationLockRef.current = false;
       return {
         hasNewMessages: genuinelyNew.length > 0 || replacedTempIds.size > 0,
         newMessageCount: genuinelyNew.length,
-        replacedTempIds
+        replacedTempIds,
+        newMessageIds
       };
     } catch (error) {
+      loadConversationLockRef.current = false;
       if (error instanceof Error && error.name === 'AbortError') {
-        return { hasNewMessages: false, newMessageCount: 0, replacedTempIds: new Set() };
+        return { hasNewMessages: false, newMessageCount: 0, replacedTempIds: new Set(), newMessageIds: [] };
       }
 
       // Track consecutive errors for exponential backoff
       consecutiveErrorsRef.current++;
-      currentPollIntervalRef.current = Math.min(3000 * Math.pow(2, consecutiveErrorsRef.current - 1), 30000);
+      currentPollIntervalRef.current = Math.min(2000 * Math.pow(2, consecutiveErrorsRef.current - 1), 30000);
 
       if (!silent) {
         const message = error instanceof Error ? error.message : 'Failed to load conversation';
-        setState((prev) => ({ ...prev, error: message }));
+        setState((prev) => ({ ...prev, error: message, isConversationLoading: false }));
       }
 
-      return { hasNewMessages: false, newMessageCount: 0, replacedTempIds: new Set() };
+      return { hasNewMessages: false, newMessageCount: 0, replacedTempIds: new Set(), newMessageIds: [] };
     }
   }, [apiKey, configId, findNewMessages]);
 
@@ -324,7 +361,10 @@ export function useCloudAgents(options: UseCloudAgentsOptions = {}): {
       setState((prev) => ({
         ...prev,
         selectedAgentId: undefined,
-        conversation: undefined
+        conversation: undefined,
+        isConversationLoading: false,
+        // Keep unread tracking but don't show pending count when no agent selected
+        pendingMessageCount: 0
       }));
       return;
     }
@@ -335,32 +375,40 @@ export function useCloudAgents(options: UseCloudAgentsOptions = {}): {
       pollTimeoutRef.current = null;
     }
 
+    // Cancel any pending conversation load
+    if (abortControllerRef.current) {
+      abortControllerRef.current.abort();
+    }
+
+    // Check if conversation is already cached
+    const existingConversation = state.conversationsByAgentId[id];
+    const shouldShowLoading = !existingConversation;
+
     setState((prev) => ({
       ...prev,
       selectedAgentId: id,
-      conversation: prev.conversationsByAgentId[id] ?? prev.conversation
+      conversation: existingConversation ?? prev.conversation,
+      isConversationLoading: shouldShowLoading,
+      // Don't reset unread tracking - user might come back to this conversation
     }));
 
-    // Reset tracking for new agent
-    lastMessageCountRef.current = 0;
-    lastFetchedMessageIdsRef.current = new Set();
+    // Reset polling interval
+    currentPollIntervalRef.current = 2000;
+    consecutiveErrorsRef.current = 0;
 
+    // Load conversation (will show loading state if not cached)
     await loadConversation(id);
-  }, [loadConversation]);
+  }, [state.conversationsByAgentId, loadConversation]);
 
   const refresh = useCallback(async (): Promise<void> => {
     await loadAgents();
     if (state.selectedAgentId) {
-      lastMessageCountRef.current = 0;
-      lastFetchedMessageIdsRef.current = new Set();
       await loadConversation(state.selectedAgentId, false);
     }
   }, [loadAgents, loadConversation, state.selectedAgentId]);
 
   const refreshConversation = useCallback(async (): Promise<void> => {
     if (state.selectedAgentId) {
-      lastMessageCountRef.current = 0;
-      lastFetchedMessageIdsRef.current = new Set();
       await loadConversation(state.selectedAgentId, false);
     }
   }, [loadConversation, state.selectedAgentId]);
@@ -402,8 +450,11 @@ export function useCloudAgents(options: UseCloudAgentsOptions = {}): {
         messages: updatedMessages
       };
 
-      // Update last message count ref to prevent false "new message" detection
-      lastMessageCountRef.current = updatedMessages.length;
+      // Update unread tracking - user's own messages are not unread
+      const newUnreadIds = new Set(prev.unreadMessageIds);
+      if (newMessage.id && !newMessage.id.startsWith('temp-')) {
+        newUnreadIds.add(newMessage.id);
+      }
 
       return {
         ...prev,
@@ -411,16 +462,63 @@ export function useCloudAgents(options: UseCloudAgentsOptions = {}): {
         conversationsByAgentId: {
           ...prev.conversationsByAgentId,
           [agentId]: updatedConversation
-        }
+        },
+        pendingMessageCount: newUnreadIds.size,
+        unreadMessageIds: newUnreadIds
       };
     });
   }, []);
 
-  const markMessagesRead = useCallback((): void => {
+  // Mark specific number of messages as read (from bottom)
+  const markMessagesRead = useCallback((count: number = 1): void => {
+    setState((prev) => {
+      const messages = prev.conversation?.messages ?? [];
+      const currentUnreadIds = new Set(prev.unreadMessageIds);
+      let removed = 0;
+
+      // Remove from end (oldest unread first)
+      for (let i = messages.length - 1; i >= 0 && removed < count; i--) {
+        const msg = messages[i];
+        if (msg && msg.id && currentUnreadIds.has(msg.id) && !msg.id.startsWith('temp-')) {
+          currentUnreadIds.delete(msg.id);
+          removed++;
+        }
+      }
+
+      return {
+        ...prev,
+        pendingMessageCount: currentUnreadIds.size,
+        unreadMessageIds: currentUnreadIds,
+        lastReadTimestamp: Date.now()
+      };
+    });
+  }, []);
+
+  // Mark all messages as read
+  const markAllMessagesRead = useCallback((): void => {
     setState((prev) => ({
       ...prev,
-      pendingMessageCount: 0
+      pendingMessageCount: 0,
+      unreadMessageIds: new Set(),
+      lastReadTimestamp: Date.now()
     }));
+  }, []);
+
+  // Get ID of first unread message for scrolling
+  const scrollToFirstUnread = useCallback((): string | undefined => {
+    let firstUnreadId: string | undefined;
+    setState((prev) => {
+      const messages = prev.conversation?.messages ?? [];
+      // Find first message that is unread
+      for (const msg of messages) {
+        if (msg.id && prev.unreadMessageIds.has(msg.id) && !msg.id.startsWith('temp-')) {
+          firstUnreadId = msg.id;
+          break;
+        }
+      }
+      return prev;
+    });
+    return firstUnreadId;
   }, []);
 
   // Smart polling with exponential backoff and visibility handling
@@ -443,7 +541,6 @@ export function useCloudAgents(options: UseCloudAgentsOptions = {}): {
   }, [configId, apiKey, pollIntervalMs, loadUserInfo, loadAgents]);
 
   // Enhanced conversation polling - ONLY poll when agent is RUNNING
-  // When agent is FINISHED or ERROR, no new messages will come
   useEffect(() => {
     if (!state.selectedAgentId || !conversationPollIntervalMs || conversationPollIntervalMs <= 0) {
       return;
@@ -460,18 +557,17 @@ export function useCloudAgents(options: UseCloudAgentsOptions = {}): {
     }
 
     let pollCount = 0;
-    const maxPollCount = Infinity; // Keep polling while running
+    const maxPollCount = Infinity;
 
     const runPoll = async () => {
       if (!state.selectedAgentId || state.selectedAgentId !== currentAgentId) return;
 
       const result = await loadConversation(state.selectedAgentId, true);
 
-      // Only increment poll count if no new messages (we're just checking)
       if (!result.hasNewMessages) {
         pollCount++;
       } else {
-        pollCount = 0; // Reset on new messages
+        pollCount = 0;
       }
 
       if (pollCount > maxPollCount) {
@@ -514,6 +610,8 @@ export function useCloudAgents(options: UseCloudAgentsOptions = {}): {
     refresh,
     refreshConversation,
     addMessageToConversation,
-    markMessagesRead
+    markMessagesRead,
+    markAllMessagesRead,
+    scrollToFirstUnread
   };
 }

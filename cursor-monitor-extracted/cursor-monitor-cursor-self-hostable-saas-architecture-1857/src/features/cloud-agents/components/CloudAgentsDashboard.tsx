@@ -4,11 +4,14 @@
  * Purpose:
  * - High-level dashboard view for monitoring and interacting with
  *   Cursor Cloud Agents for multiple API configurations with color coding.
+ * - Professional chat behavior matching MiniMax standards
+ * - Full unread messages system with decreasing counter
+ * - Smooth loading states and transitions
  */
 'use client';
 
 import type { FC } from 'react';
-import { useEffect, useRef, useState, useCallback } from 'react';
+import { useEffect, useRef, useState, useCallback, useMemo } from 'react';
 
 import { useCloudAgents } from '@/features/cloud-agents/hooks/use-cloud-agents.hook';
 import { EmptyState } from '@/shared/components/EmptyState';
@@ -31,12 +34,171 @@ interface CloudAgentsDashboardProps {
   initialConfigId?: string;
 }
 
-
 interface AgentWithConfig extends CursorAgent {
   configId?: string;
   configColor?: string;
   configName?: string;
 }
+
+// Agent Card Component - Extracted to reduce code duplication
+const AgentCard: FC<{
+  agent: AgentWithConfig;
+  isSelected: boolean;
+  isPinned: boolean;
+  state: any;
+  selectAgent: (id: string) => Promise<void>;
+  togglePinned: (agentId: string) => void;
+  formatDateTime: (dateString?: string) => string;
+  extractRepoName: (repo?: string) => string;
+  setCopiedRepoName: (id: string | null) => void;
+  copiedRepoName: string | null;
+}> = ({
+  agent,
+  isSelected,
+  isPinned,
+  state,
+  selectAgent,
+  togglePinned,
+  formatDateTime,
+  extractRepoName,
+  setCopiedRepoName,
+  copiedRepoName
+}) => {
+  const agentColor = agent.configColor ?? '#6b7280';
+  const agentRepo = (agent['source'] && typeof agent['source'] === 'object' && 'repository' in agent['source']
+    ? (typeof (agent['source'] as { repository?: string })['repository'] === 'string'
+        ? (agent['source'] as { repository: string })['repository']
+        : undefined)
+    : undefined) ||
+    (typeof agent['repository'] === 'string' ? agent['repository'] : undefined) ||
+    (typeof agent['repo'] === 'string' ? agent['repo'] : undefined);
+
+  const agentConversation = state.conversationsByAgentId[agent.id];
+  const conversationRepo = (agentConversation && typeof agentConversation === 'object' && 'source' in agentConversation
+    ? (agentConversation['source'] && typeof agentConversation['source'] === 'object' && 'repository' in agentConversation['source']
+        ? (typeof (agentConversation['source'] as { repository?: string })['repository'] === 'string'
+            ? (agentConversation['source'] as { repository: string })['repository']
+            : undefined)
+        : undefined)
+    : undefined) ||
+    (agentConversation && typeof agentConversation === 'object' && 'repository' in agentConversation
+      ? (typeof agentConversation['repository'] === 'string' ? agentConversation['repository'] : undefined)
+      : undefined);
+
+  const finalRepo = agentRepo || conversationRepo;
+  const repoName = extractRepoName(finalRepo);
+  const isRunning = agent.status === 'RUNNING';
+  const createdAt = formatDateTime(agent['createdAt'] as string | undefined);
+
+  const messages: any[] = agentConversation?.messages ?? [];
+  const lastUserMessage = messages
+    .filter((msg: any) => {
+      if (typeof msg === 'object' && msg !== null) {
+        const msgCreatedAt = (msg as { createdAt?: string })['createdAt'];
+        return msgCreatedAt && typeof msgCreatedAt === 'string';
+      }
+      return false;
+    })
+    .pop();
+
+  const lastMessageTime = lastUserMessage && typeof lastUserMessage === 'object' && 'createdAt' in lastUserMessage
+    ? formatDateTime((lastUserMessage as { createdAt?: string })['createdAt'])
+    : (agent['updatedAt'] ? formatDateTime(agent['updatedAt'] as string) : null);
+
+  const handleCopyRepo = useCallback((e: React.MouseEvent) => {
+    e.stopPropagation();
+    void navigator.clipboard.writeText(repoName);
+    setCopiedRepoName(agent.id);
+    setTimeout(() => setCopiedRepoName(null), 2000);
+  }, [agent.id, repoName, setCopiedRepoName]);
+
+  const handleTogglePin = useCallback((e: React.MouseEvent) => {
+    e.stopPropagation();
+    togglePinned(agent.id);
+  }, [agent.id, togglePinned]);
+
+  return (
+    <button
+      type="button"
+      onClick={() => void selectAgent(agent.id)}
+      className={`w-full text-left p-2.5 rounded-lg border text-xs transition-all focus:outline-none focus:ring-2 focus:ring-primary/50 ${
+        isSelected
+          ? 'border-primary bg-primary/10 shadow-sm'
+          : 'border-border bg-card hover:bg-card-raised hover:border-primary/30'
+      }`}
+      style={isSelected ? { borderLeftColor: agentColor, borderLeftWidth: '3px' } : {}}
+      aria-label={`Select agent ${agent.name ?? 'Unnamed'}`}
+      aria-pressed={isSelected}
+    >
+      <div className="flex justify-between items-start gap-2">
+        <div className="min-w-0 flex items-start gap-2 flex-1">
+          <div className="relative flex-shrink-0 mt-1.5">
+            {isRunning && (
+              <div className="absolute -top-0.5 -left-0.5 w-3 h-3 border-2 border-emerald-400 rounded-full animate-ping opacity-75"></div>
+            )}
+            <div
+              className={`w-2 h-2 rounded-full ${isRunning ? 'bg-emerald-400' : ''}`}
+              style={{ backgroundColor: isRunning ? undefined : agentColor }}
+            />
+          </div>
+          <div className="min-w-0 flex-1">
+            <div className="font-medium text-foreground truncate text-xs mb-0.5">
+              {agent.name ?? 'Unnamed Agent'}
+            </div>
+            <button
+              type="button"
+              onClick={handleCopyRepo}
+              className="text-[0.65rem] text-muted-foreground truncate hover:text-foreground transition-colors flex items-center gap-1 group focus:outline-none focus:ring-2 focus:ring-primary/50 rounded"
+              title={copiedRepoName === agent.id ? "Copied!" : "Click to copy repository name"}
+              aria-label={`Copy repository name: ${repoName}`}
+            >
+              <span className="truncate">{repoName}</span>
+              {copiedRepoName === agent.id ? (
+                <svg className="w-3 h-3 text-primary flex-shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 13l4 4L19 7" />
+                </svg>
+              ) : (
+                <svg className="w-3 h-3 opacity-0 group-hover:opacity-60 flex-shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M8 16H6a2 2 0 01-2-2V6a2 2 0 012-2h8a2 2 0 012 2v2m-6 12h8a2 2 0 002-2v-8a2 2 0 00-2-2h-8a2 2 0 00-2 2v8a2 2 0 002 2z" />
+                </svg>
+              )}
+            </button>
+            <div className="mt-1 flex items-center gap-1.5 flex-wrap">
+              <span className={`text-[0.65rem] px-1.5 py-0.5 rounded border ${
+                agent.status === 'RUNNING' ? 'border-emerald-700/50 bg-emerald-950/30 text-emerald-300' :
+                agent.status === 'FINISHED' ? 'border-green-700/50 bg-green-950/30 text-green-300' :
+                agent.status === 'ERROR' ? 'border-red-700/50 bg-red-950/30 text-red-300' :
+                'border-border bg-card text-muted-foreground'
+              }`}>
+                {agent.status ?? 'UNKNOWN'}
+              </span>
+            </div>
+            <div className="mt-1 space-y-0.5">
+              <div className="text-[0.6rem] text-muted-foreground">Created: {createdAt}</div>
+              {lastMessageTime ? (
+                <div className="text-[0.6rem] text-muted-foreground">Last task: {lastMessageTime}</div>
+              ) : agent['updatedAt'] ? (
+                <div className="text-[0.6rem] text-muted-foreground">Updated: {formatDateTime(agent['updatedAt'] as string)}</div>
+              ) : null}
+            </div>
+          </div>
+        </div>
+        <button
+          type="button"
+          onClick={handleTogglePin}
+          className="ml-1 p-1 hover:bg-primary/10 rounded transition-colors flex-shrink-0 focus:outline-none focus:ring-2 focus:ring-primary/50"
+          title={isPinned ? "Unpin agent" : "Pin agent"}
+          aria-label={isPinned ? "Unpin agent" : "Pin agent"}
+        >
+          <svg className={`w-3.5 h-3.5 ${isPinned ? 'text-primary' : 'text-muted-foreground hover:text-foreground'}`} fill="none" stroke="currentColor" viewBox="0 0 24 24">
+            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 5a2 2 0 012-2h10a2 2 0 012 2v7a2 2 0 01-2 2H7a2 2 0 01-2-2V5z" />
+            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 15v6m-3-3h6" />
+          </svg>
+        </button>
+      </div>
+    </button>
+  );
+};
 
 export const CloudAgentsDashboard: FC<CloudAgentsDashboardProps> = ({ initialConfigId }) => {
   const [localConfigs, setLocalConfigs] = useState<ApiConfig[]>([]);
@@ -63,40 +225,52 @@ export const CloudAgentsDashboard: FC<CloudAgentsDashboardProps> = ({ initialCon
   const primaryConfig = localConfigs.find(c => c.id === primaryConfigId);
   const primaryApiKey = getApiKeyForConfig(primaryConfig ?? null);
 
-  const { state, selectAgent, refresh, refreshConversation, addMessageToConversation } = useCloudAgents({
+  const {
+    state,
+    selectAgent,
+    refresh,
+    refreshConversation,
+    addMessageToConversation,
+    markMessagesRead,
+    markAllMessagesRead
+  } = useCloudAgents({
     configId: primaryConfigId,
     apiKey: primaryApiKey,
-    pollIntervalMs: undefined, // No polling for agents list (manual refresh)
-    conversationPollIntervalMs: 2000 // Poll conversation every 2 seconds for real-time updates
+    pollIntervalMs: undefined,
+    conversationPollIntervalMs: 2000
   });
+
   const { state: actionsState, launch, stop, remove, followup } = useCloudAgentsActions({
     configId: primaryConfigId,
     apiKey: primaryApiKey
   });
 
+  // Scroll and unread tracking refs
+  const conversationEndRef = useRef<HTMLDivElement | null>(null);
+  const conversationContainerRef = useRef<HTMLDivElement | null>(null);
+  const previousMessageIdsRef = useRef<Set<string>>(new Set());
+  const isUserScrolledUpRef = useRef<boolean>(false);
+  const lastAutoScrollTimeRef = useRef<number>(0);
+  const [showNewMessagesButton, setShowNewMessagesButton] = useState(false);
+  const [firstUnreadId, setFirstUnreadId] = useState<string | undefined>(undefined);
+  const unreadMessageElementsRef = useRef<Map<string, HTMLElement>>(new Map());
+
   // Load configs from localStorage and environment variable
   useEffect(() => {
     void (async () => {
-      // First set sync configs (localStorage + cached env var)
       setLocalConfigs(getAllApiConfigsSync());
-      
-      // Then try to load env var from server if not in cache
       await loadEnvVarApiKey();
-      
-      // Reload configs to include server-side env var if found
       const configs = await getAllApiConfigs();
       setLocalConfigs(configs);
     })();
   }, []);
 
-  // Refresh configs when localStorage changes (e.g., from Settings page)
+  // Refresh configs when localStorage changes
   useEffect(() => {
     const handleStorageChange = (): void => {
-      // Use sync version for event handlers (faster, uses cache if available)
       setLocalConfigs(getAllApiConfigsSync());
     };
     window.addEventListener('storage', handleStorageChange);
-    // Also check on focus (in case changes were made in same tab)
     window.addEventListener('focus', handleStorageChange);
     return () => {
       window.removeEventListener('storage', handleStorageChange);
@@ -112,7 +286,6 @@ export const CloudAgentsDashboard: FC<CloudAgentsDashboardProps> = ({ initialCon
         setSelectedConfigIds([firstConfig.id]);
       }
     }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [localConfigs.length, selectedConfigIds.length]);
 
   useEffect(() => {
@@ -121,116 +294,284 @@ export const CloudAgentsDashboard: FC<CloudAgentsDashboardProps> = ({ initialCon
       try {
         const ms = await fetchCloudAgentModels({ apiKey: primaryApiKey });
         setModels(ms.models ?? []);
-
         const repos = await fetchCloudAgentRepositories({ apiKey: primaryApiKey });
         setRepositories(repos.repositories?.map((r) => r.repository) ?? []);
       } catch {
         // Fail silently
       }
-    })();
+    });
   }, [primaryApiKey]);
 
-  const handleLaunch = async (event: React.FormEvent<HTMLFormElement>): Promise<void> => {
-    event.preventDefault();
-    if (!selectedRepo || !launchPrompt) {
-      setLaunchFeedback({ type: 'error', message: 'Please select a repository and enter a task description' });
-      setTimeout(() => setLaunchFeedback(null), 3000);
+  // Helper function to format date/time
+  const formatDateTime = useCallback((dateString?: string): string => {
+    if (!dateString) return 'N/A';
+    try {
+      const date = new Date(dateString);
+      return date.toLocaleString('en-US', {
+        month: 'short',
+        day: 'numeric',
+        hour: '2-digit',
+        minute: '2-digit'
+      });
+    } catch {
+      return 'N/A';
+    }
+  }, []);
+
+  // Helper function to extract repository name from full URL
+  const extractRepoName = useCallback((repo?: string): string => {
+    if (!repo) return 'N/A';
+    try {
+      const match = repo.match(/(?:github\.com\/|git@github\.com:)([^\/]+\/[^\/]+?)(?:\.git)?(?:\/|$)/);
+      if (match && match[1]) return match[1];
+      if (repo.includes('/') && !repo.startsWith('http')) return repo;
+      return repo;
+    } catch {
+      return repo;
+    }
+  }, []);
+
+  // Track unread message elements for scrolling
+  useEffect(() => {
+    state.unreadMessageIds.forEach((id) => {
+      const el = document.getElementById(`message-${id}`);
+      if (el) {
+        unreadMessageElementsRef.current.set(id, el);
+      }
+    });
+  }, [state.unreadMessageIds, state.conversation?.messages]);
+
+  // Update first unread ID when unread messages change
+  useEffect(() => {
+    const messages = state.conversation?.messages ?? [];
+    for (const msg of messages) {
+      if (msg.id && state.unreadMessageIds.has(msg.id) && !msg.id.startsWith('temp-')) {
+        setFirstUnreadId(msg.id);
+        break;
+      }
+    }
+    if (state.unreadMessageIds.size === 0) {
+      setFirstUnreadId(undefined);
+    }
+  }, [state.unreadMessageIds, state.conversation?.messages]);
+
+  // Check scroll position and update unread button visibility
+  const checkScrollPosition = useCallback(() => {
+    if (!conversationContainerRef.current) return;
+
+    const { scrollTop, scrollHeight, clientHeight } = conversationContainerRef.current;
+    const scrollThreshold = 100;
+    const isAtBottom = scrollHeight - scrollTop - clientHeight <= scrollThreshold;
+
+    const wasScrolledUp = isUserScrolledUpRef.current;
+    isUserScrolledUpRef.current = !isAtBottom;
+
+    // Show button if user is scrolled up AND there are unread messages
+    const shouldShowButton = !isAtBottom && state.pendingMessageCount > 0;
+    setShowNewMessagesButton(shouldShowButton);
+
+    // Mark messages as read when user scrolls to bottom
+    if (wasScrolledUp && isAtBottom && state.pendingMessageCount > 0) {
+      markMessagesRead(state.pendingMessageCount);
+    }
+  }, [state.pendingMessageCount, markMessagesRead]);
+
+  // Auto-scroll when new messages arrive
+  useEffect(() => {
+    if (!state.selectedAgentId) {
+      previousMessageIdsRef.current = new Set();
       return;
     }
 
-    setLaunchFeedback({ type: 'success', message: 'Agent created successfully! Refreshing...' });
-    
-    try {
-    await launch({
-      promptText: launchPrompt,
-      repository: selectedRepo,
-      model: selectedModel,
-      autoCreatePr: true
-    });
+    const messages = state.conversation?.messages ?? [];
+    const currentMessageIds = new Set<string>(
+      messages.map(m => m.id).filter((id): id is string => Boolean(id))
+    );
 
-    setLaunchPrompt('');
-      setSelectedRepo('');
-      setLaunchFeedback({ type: 'success', message: 'Agent launched successfully!' });
-      setTimeout(() => setLaunchFeedback(null), 3000);
-    void refresh();
-    } catch (error) {
-      setLaunchFeedback({ 
-        type: 'error', 
-        message: error instanceof Error ? error.message : 'Failed to launch agent' 
-      });
-      setTimeout(() => setLaunchFeedback(null), 5000);
-    }
-  };
+    const previousIds = previousMessageIdsRef.current;
+    const newMessageIds = [...currentMessageIds].filter(id => !previousIds.has(id));
+    const hasNewMessages = newMessageIds.length > 0;
 
-  const handleFollowup = async (event: React.FormEvent<HTMLFormElement>): Promise<void> => {
-    event.preventDefault();
-    if (!state.selectedAgentId || !launchPrompt || actionsState.busy) return;
+    const now = Date.now();
+    const shouldAutoScroll = hasNewMessages &&
+      !isUserScrolledUpRef.current &&
+      (now - lastAutoScrollTimeRef.current > 300);
 
-    const promptText = launchPrompt.trim();
-    if (!promptText) return;
-
-    // Clear input immediately for better UX
-    setLaunchPrompt('');
-
-    // Create temporary message ID for optimistic update
-    const tempMessageId = `temp-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`;
-
-    // Optimistic UI update: Add message immediately with temporary ID
-    addMessageToConversation(state.selectedAgentId, {
-      type: 'user_message',
-      text: promptText,
-      id: tempMessageId
-    });
-
-    // Scroll to bottom immediately to show new message
-    // Only scroll if user is not reading history
-    if (!isUserScrolledUpRef.current && conversationEndRef.current) {
+    if (shouldAutoScroll && conversationEndRef.current) {
+      lastAutoScrollTimeRef.current = now;
       requestAnimationFrame(() => {
-        conversationEndRef.current?.scrollIntoView({ behavior: 'smooth', block: 'end' });
+        conversationEndRef.current?.scrollIntoView({
+          behavior: 'smooth',
+          block: 'end'
+        });
       });
     }
 
-    try {
-      // Send follow-up request
-      await followup(state.selectedAgentId, promptText);
+    previousMessageIdsRef.current = currentMessageIds;
+  }, [state.selectedAgentId, state.conversation?.messages]);
 
-      // Don't call full refresh() - let polling pick up the changes
-      // This prevents the flickering issue
-    } catch (error) {
-      // On error, the polling will eventually sync the correct state
-      // For now, just log the error (user sees their message is still there)
-      console.error('Follow-up error:', error);
+  // Scroll on agent selection change - open directly at bottom
+  useEffect(() => {
+    if (state.selectedAgentId && conversationEndRef.current) {
+      isUserScrolledUpRef.current = false;
+      setShowNewMessagesButton(false);
+      previousMessageIdsRef.current = new Set();
+      lastAutoScrollTimeRef.current = 0;
+
+      // Open directly at bottom without animation
+      setTimeout(() => {
+        if (conversationEndRef.current) {
+          conversationEndRef.current.scrollIntoView({ behavior: 'auto', block: 'end' });
+        }
+      }, 50);
     }
-  };
+  }, [state.selectedAgentId]);
 
-  // Use configs for display (including env var configs)
-  const allConfigsForDisplay = localConfigs.map((c) => ({
-    id: c.id,
-    name: c.name,
-    description: c.description,
-    color: c.color
-  }));
+  // Handle scroll events
+  useEffect(() => {
+    const container = conversationContainerRef.current;
+    if (!container) return;
+
+    const handleScroll = () => {
+      checkScrollPosition();
+    };
+
+    container.addEventListener('scroll', handleScroll, { passive: true });
+    return () => container.removeEventListener('scroll', handleScroll);
+  }, [checkScrollPosition]);
+
+  // Scroll to first unread message
+  const scrollToFirstUnread = useCallback(() => {
+    if (firstUnreadId) {
+      const el = document.getElementById(`message-${firstUnreadId}`);
+      if (el) {
+        isUserScrolledUpRef.current = false;
+        setShowNewMessagesButton(false);
+        el.scrollIntoView({ behavior: 'smooth', block: 'center' });
+        // Mark this message as read
+        markMessagesRead(1);
+      }
+    }
+  }, [firstUnreadId, markMessagesRead]);
+
+  // Scroll to bottom
+  const scrollToBottom = useCallback(() => {
+    if (conversationEndRef.current) {
+      isUserScrolledUpRef.current = false;
+      setShowNewMessagesButton(false);
+      conversationEndRef.current.scrollIntoView({
+        behavior: 'smooth',
+        block: 'end'
+      });
+      // Mark all messages as read
+      markAllMessagesRead();
+    }
+  }, [markAllMessagesRead]);
+
+  // Debounce search query
+  useEffect(() => {
+    const timer = setTimeout(() => {
+      setDebouncedSearchQuery(searchQuery);
+    }, 300);
+    return () => clearTimeout(timer);
+  }, [searchQuery]);
+
+  // Keyboard shortcuts
+  useEffect(() => {
+    const handleKeyDown = (event: KeyboardEvent): void => {
+      if ((event.ctrlKey || event.metaKey) && event.key === 'k') {
+        event.preventDefault();
+        const searchInput = document.querySelector('input[placeholder*="Search by name"]') as HTMLInputElement;
+        searchInput?.focus();
+      }
+      if (event.key === 'Escape' && state.selectedAgentId) {
+        void selectAgent('');
+      }
+    };
+    window.addEventListener('keydown', handleKeyDown);
+    return () => window.removeEventListener('keydown', handleKeyDown);
+  }, [state.selectedAgentId, selectAgent]);
+
+  const togglePinned = useCallback((agentId: string): void => {
+    setPinnedAgentIds((prev) =>
+      prev.includes(agentId) ? prev.filter((id) => id !== agentId) : [...prev, agentId]
+    );
+  }, []);
+
+  const toggleConfigSelection = useCallback((configId: string): void => {
+    setSelectedConfigIds((prev) => {
+      if (prev.includes(configId)) {
+        const filtered = prev.filter((id) => id !== configId);
+        return filtered.length > 0 ? filtered : [configId];
+      }
+      return [...prev, configId];
+    });
+  }, []);
+
+  const allConfigsForDisplay = useMemo(() =>
+    localConfigs.map((c) => ({
+      id: c.id,
+      name: c.name,
+      description: c.description,
+      color: c.color
+    })),
+    [localConfigs]
+  );
 
   // Merge agents with config metadata
-  const agentsWithConfig: AgentWithConfig[] = state.agents.map((agent) => {
-    const configColor = primaryConfigId ? getApiColor(primaryConfigId) : undefined;
-    const primaryConfig = allConfigsForDisplay.find((c) => c.id === primaryConfigId);
-    return {
-      ...agent,
-      configId: primaryConfigId,
-      configColor,
-      configName: primaryConfig?.name
-    };
-  });
+  const agentsWithConfig = useMemo<AgentWithConfig[]>(() =>
+    state.agents.map((agent) => {
+      const configColor = primaryConfigId ? getApiColor(primaryConfigId) : undefined;
+      const primaryConfig = allConfigsForDisplay.find((c) => c.id === primaryConfigId);
+      return {
+        ...agent,
+        configId: primaryConfigId,
+        configColor,
+        configName: primaryConfig?.name
+      };
+    }),
+    [state.agents, primaryConfigId, allConfigsForDisplay]
+  );
 
-  const currentAgent: AgentWithConfig | undefined = agentsWithConfig.find(
-    (a) => a.id === state.selectedAgentId
+  const filteredAgents = useMemo(() => {
+    return agentsWithConfig.filter((agent) => {
+      if (statusFilter !== 'ALL' && agent.status !== statusFilter) return false;
+      if (!debouncedSearchQuery.trim()) return true;
+      const q = debouncedSearchQuery.toLowerCase();
+      const agentRepo = (agent['source'] && typeof agent['source'] === 'object' && 'repository' in agent['source']
+          ? (typeof (agent['source'] as { repository?: string })['repository'] === 'string'
+              ? (agent['source'] as { repository: string })['repository']
+              : '')
+          : '') ||
+          (typeof agent['repository'] === 'string' ? agent['repository'] : '') ||
+          (typeof agent['repo'] === 'string' ? agent['repo'] : '');
+      return (
+        (agent.name ?? '').toLowerCase().includes(q) ||
+        agent.id.toLowerCase().includes(q) ||
+        agentRepo.toLowerCase().includes(q)
+      );
+    });
+  }, [agentsWithConfig, statusFilter, debouncedSearchQuery]);
+
+  const pinnedAgents = useMemo(() =>
+    filteredAgents.filter((agent) => pinnedAgentIds.includes(agent.id)),
+    [filteredAgents, pinnedAgentIds]
+  );
+
+  const otherAgents = useMemo(() =>
+    filteredAgents.filter((agent) => !pinnedAgentIds.includes(agent.id)),
+    [filteredAgents, pinnedAgentIds]
+  );
+
+  const currentAgent = useMemo(() =>
+    agentsWithConfig.find((a) => a.id === state.selectedAgentId),
+    [agentsWithConfig, state.selectedAgentId]
   );
 
   // Extract branch name, base branch, repository, and request ID from currentAgent
-  // Cursor API structure: agent.target.branchName (created branch), agent.source.ref (base branch)
-  const branchName: string | undefined = currentAgent
-    ? (currentAgent['target'] && typeof currentAgent['target'] === 'object' && 'branchName' in currentAgent['target']
+  const branchName: string | undefined = useMemo(() => {
+    if (!currentAgent) return undefined;
+    return (currentAgent['target'] && typeof currentAgent['target'] === 'object' && 'branchName' in currentAgent['target']
         ? (typeof (currentAgent['target'] as { branchName?: string })['branchName'] === 'string'
             ? (currentAgent['target'] as { branchName: string })['branchName']
             : undefined)
@@ -239,7 +580,6 @@ export const CloudAgentsDashboard: FC<CloudAgentsDashboardProps> = ({ initialCon
       (typeof currentAgent['currentBranch'] === 'string' ? currentAgent['currentBranch'] : undefined) ||
       (typeof currentAgent['branchName'] === 'string' ? currentAgent['branchName'] : undefined) ||
       (typeof currentAgent['branch'] === 'string' ? currentAgent['branch'] : undefined) ||
-      // Also check conversation metadata
       (state.conversation && typeof state.conversation === 'object' && 'target' in state.conversation
         ? (state.conversation['target'] && typeof state.conversation['target'] === 'object' && 'branchName' in state.conversation['target']
             ? (typeof (state.conversation['target'] as { branchName?: string })['branchName'] === 'string'
@@ -249,11 +589,12 @@ export const CloudAgentsDashboard: FC<CloudAgentsDashboardProps> = ({ initialCon
         : undefined) ||
       (state.conversation && typeof state.conversation === 'object' && 'createdBranch' in state.conversation
         ? (typeof state.conversation['createdBranch'] === 'string' ? state.conversation['createdBranch'] as string : undefined)
-        : undefined)
-    : undefined;
-  
-  const baseBranch: string | undefined = currentAgent
-    ? (currentAgent['source'] && typeof currentAgent['source'] === 'object' && 'ref' in currentAgent['source']
+        : undefined);
+  }, [currentAgent, state.conversation]);
+
+  const baseBranch: string | undefined = useMemo(() => {
+    if (!currentAgent) return undefined;
+    return (currentAgent['source'] && typeof currentAgent['source'] === 'object' && 'ref' in currentAgent['source']
         ? (typeof (currentAgent['source'] as { ref?: string })['ref'] === 'string'
             ? (currentAgent['source'] as { ref: string })['ref']
             : undefined)
@@ -261,7 +602,6 @@ export const CloudAgentsDashboard: FC<CloudAgentsDashboardProps> = ({ initialCon
       (typeof currentAgent['baseBranch'] === 'string' ? currentAgent['baseBranch'] : undefined) ||
       (typeof currentAgent['baseRef'] === 'string' ? currentAgent['baseRef'] : undefined) ||
       (typeof currentAgent['ref'] === 'string' && currentAgent['ref'] !== branchName ? currentAgent['ref'] : undefined) ||
-      // Also check conversation metadata
       (state.conversation && typeof state.conversation === 'object' && 'source' in state.conversation
         ? (state.conversation['source'] && typeof state.conversation['source'] === 'object' && 'ref' in state.conversation['source']
             ? (typeof (state.conversation['source'] as { ref?: string })['ref'] === 'string'
@@ -269,13 +609,12 @@ export const CloudAgentsDashboard: FC<CloudAgentsDashboardProps> = ({ initialCon
                 : undefined)
             : undefined)
         : undefined) ||
-      'main'
-    : undefined;
-  
-  // Try to get repository from agent data or conversation
-  // Cursor API structure: agent.source.repository (full URL or owner/repo format)
-  const repositoryName: string | undefined = currentAgent
-    ? (currentAgent['source'] && typeof currentAgent['source'] === 'object' && 'repository' in currentAgent['source']
+      'main';
+  }, [currentAgent, branchName, state.conversation]);
+
+  const repositoryName: string | undefined = useMemo(() => {
+    if (!currentAgent) return undefined;
+    return (currentAgent['source'] && typeof currentAgent['source'] === 'object' && 'repository' in currentAgent['source']
         ? (typeof (currentAgent['source'] as { repository?: string })['repository'] === 'string'
             ? (currentAgent['source'] as { repository: string })['repository']
             : undefined)
@@ -289,221 +628,74 @@ export const CloudAgentsDashboard: FC<CloudAgentsDashboardProps> = ({ initialCon
                 : undefined)
             : undefined)
         : undefined) ||
-      (state.conversation && typeof state.conversation['repository'] === 'string' ? state.conversation['repository'] as string : undefined)
-    : undefined;
-  
+      (state.conversation && typeof state.conversation['repository'] === 'string' ? state.conversation['repository'] as string : undefined);
+  }, [currentAgent, state.conversation]);
+
   const requestId: string | undefined = currentAgent?.id;
-  
-  // Helper function to format date/time
-  const formatDateTime = (dateString?: string): string => {
-    if (!dateString) return 'N/A';
-    try {
-      const date = new Date(dateString);
-      return date.toLocaleString('en-US', {
-        month: 'short',
-        day: 'numeric',
-        hour: '2-digit',
-        minute: '2-digit'
-      });
-    } catch {
-      return 'N/A';
-    }
-  };
-  
-  // Helper function to extract repository name from full URL
-  const extractRepoName = (repo?: string): string => {
-    if (!repo) return 'N/A';
-    try {
-      // Handle both URL format (https://github.com/owner/repo) and owner/repo format
-      const match = repo.match(/(?:github\.com\/|git@github\.com:)([^\/]+\/[^\/]+?)(?:\.git)?(?:\/|$)/);
-      if (match && match[1]) return match[1];
-      // If already in owner/repo format
-      if (repo.includes('/') && !repo.startsWith('http')) return repo;
-      return repo;
-    } catch {
-      return repo;
-    }
-  };
 
-  const totalAgents = agentsWithConfig.length;
-  const runningAgents = agentsWithConfig.filter((agent) => agent.status === 'RUNNING').length;
-  const finishedAgents = agentsWithConfig.filter((agent) => agent.status === 'FINISHED').length;
-  const errorAgents = agentsWithConfig.filter((agent) => agent.status === 'ERROR').length;
-
-  const conversationEndRef = useRef<HTMLDivElement | null>(null);
-  const conversationContainerRef = useRef<HTMLDivElement | null>(null);
-  const previousMessageCountRef = useRef<number>(0);
-  const previousMessageIdsRef = useRef<Set<string>>(new Set());
-  const isUserScrolledUpRef = useRef<boolean>(false);
-  const lastAutoScrollTimeRef = useRef<number>(0);
-  const [showNewMessagesButton, setShowNewMessagesButton] = useState(false);
-
-  // Track if user has scrolled up (don't auto-scroll in this case)
-  const checkScrollPosition = useCallback(() => {
-    if (!conversationContainerRef.current) return;
-
-    const { scrollTop, scrollHeight, clientHeight } = conversationContainerRef.current;
-    const scrollThreshold = 50; // pixels from bottom
-    const isAtBottom = scrollHeight - scrollTop - clientHeight <= scrollThreshold;
-
-    isUserScrolledUpRef.current = !isAtBottom;
-    setShowNewMessagesButton(!isAtBottom && (state.pendingMessageCount > 0));
-  }, [state.pendingMessageCount]);
-
-  // Auto-scroll when new messages arrive (MiniMax-style behavior)
-  useEffect(() => {
-    if (!state.selectedAgentId) {
-      previousMessageCountRef.current = 0;
-      previousMessageIdsRef.current = new Set();
+  // Handle launch
+  const handleLaunch = async (event: React.FormEvent<HTMLFormElement>): Promise<void> => {
+    event.preventDefault();
+    if (!selectedRepo || !launchPrompt) {
+      setLaunchFeedback({ type: 'error', message: 'Please select a repository and enter a task description' });
+      setTimeout(() => setLaunchFeedback(null), 3000);
       return;
     }
 
-    const messages = state.conversation?.messages ?? [];
-    const currentMessageCount = messages.length;
+    setLaunchFeedback({ type: 'success', message: 'Agent created successfully! Refreshing...' });
 
-    // Get current message IDs (filter out undefined/null)
-    const currentMessageIds = new Set<string>(messages.map(m => m.id).filter((id): id is string => Boolean(id)));
-
-    // Check if there are genuinely new messages
-    const previousIds = previousMessageIdsRef.current;
-    const newMessageIds = [...currentMessageIds].filter(id => !previousIds.has(id));
-
-    const hasNewMessages = newMessageIds.length > 0;
-
-    // Only scroll if:
-    // 1. There are genuinely new messages
-    // 2. User is not scrolled up (reading history)
-    // 3. Not during rapid message sending (debounce)
-    const now = Date.now();
-    const shouldAutoScroll = hasNewMessages &&
-      !isUserScrolledUpRef.current &&
-      (now - lastAutoScrollTimeRef.current > 500); // Debounce 500ms
-
-    if (shouldAutoScroll && conversationEndRef.current) {
-      lastAutoScrollTimeRef.current = now;
-
-      // Use smooth scroll for new messages
-      requestAnimationFrame(() => {
-        conversationEndRef.current?.scrollIntoView({
-          behavior: 'smooth',
-          block: 'end'
-        });
+    try {
+      await launch({
+        promptText: launchPrompt,
+        repository: selectedRepo,
+        model: selectedModel,
+        autoCreatePr: true
       });
-    }
 
-    // Update refs for next comparison
-    previousMessageCountRef.current = currentMessageCount;
-    previousMessageIdsRef.current = currentMessageIds;
-  }, [state.selectedAgentId, state.conversation?.messages, state.pendingMessageCount]);
-
-  // Scroll on agent selection change (only when selecting, not when deselecting)
-  // IMPORTANT: Open directly at bottom without going to top first
-  useEffect(() => {
-    if (state.selectedAgentId && conversationEndRef.current) {
-      // Reset scroll tracking on new agent selection
-      isUserScrolledUpRef.current = false;
-      setShowNewMessagesButton(false);
-      previousMessageIdsRef.current = new Set();
-      lastAutoScrollTimeRef.current = 0;
-
-      // Open directly at bottom without animating from top
-      // This prevents the "jump to top then scroll down" effect
-      setTimeout(() => {
-        if (conversationEndRef.current) {
-          conversationEndRef.current.scrollIntoView({ behavior: 'auto', block: 'end' });
-        }
-      }, 0);
-    }
-  }, [state.selectedAgentId]);
-
-  // Handle scroll events to detect if user scrolled up
-  useEffect(() => {
-    const container = conversationContainerRef.current;
-    if (!container) return;
-
-    const handleScroll = () => {
-      checkScrollPosition();
-    };
-
-    container.addEventListener('scroll', handleScroll, { passive: true });
-    return () => container.removeEventListener('scroll', handleScroll);
-  }, [checkScrollPosition]);
-
-  // Scroll to bottom when user clicks "new messages" button
-  const scrollToBottom = useCallback(() => {
-    if (conversationEndRef.current) {
-      isUserScrolledUpRef.current = false;
-      setShowNewMessagesButton(false);
-      conversationEndRef.current.scrollIntoView({
-        behavior: 'smooth',
-        block: 'end'
+      setLaunchPrompt('');
+      setSelectedRepo('');
+      setLaunchFeedback({ type: 'success', message: 'Agent launched successfully!' });
+      setTimeout(() => setLaunchFeedback(null), 3000);
+      void refresh();
+    } catch (error) {
+      setLaunchFeedback({
+        type: 'error',
+        message: error instanceof Error ? error.message : 'Failed to launch agent'
       });
+      setTimeout(() => setLaunchFeedback(null), 5000);
     }
-  }, []);
-
-  // Debounce search query
-  useEffect(() => {
-    const timer = setTimeout(() => {
-      setDebouncedSearchQuery(searchQuery);
-    }, 300);
-    return () => clearTimeout(timer);
-  }, [searchQuery]);
-
-  // Keyboard shortcuts
-  useEffect(() => {
-    const handleKeyDown = (event: KeyboardEvent): void => {
-      // Ctrl/Cmd + K to focus search
-      if ((event.ctrlKey || event.metaKey) && event.key === 'k') {
-        event.preventDefault();
-        const searchInput = document.querySelector('input[placeholder*="Search by name"]') as HTMLInputElement;
-        searchInput?.focus();
-      }
-      // Escape to close agent
-      if (event.key === 'Escape' && state.selectedAgentId) {
-        void selectAgent('');
-      }
-    };
-    window.addEventListener('keydown', handleKeyDown);
-    return () => window.removeEventListener('keydown', handleKeyDown);
-  }, [state.selectedAgentId, selectAgent]);
-
-  const togglePinned = (agentId: string): void => {
-    setPinnedAgentIds((prev) =>
-      prev.includes(agentId) ? prev.filter((id) => id !== agentId) : [...prev, agentId]
-    );
   };
 
-  const toggleConfigSelection = (configId: string): void => {
-    setSelectedConfigIds((prev) => {
-      if (prev.includes(configId)) {
-        const filtered = prev.filter((id) => id !== configId);
-        return filtered.length > 0 ? filtered : [configId]; // Keep at least one selected
-      }
-      return [...prev, configId];
+  // Handle follow-up
+  const handleFollowup = async (event: React.FormEvent<HTMLFormElement>): Promise<void> => {
+    event.preventDefault();
+    if (!state.selectedAgentId || !launchPrompt || actionsState.busy) return;
+
+    const promptText = launchPrompt.trim();
+    if (!promptText) return;
+
+    setLaunchPrompt('');
+
+    const tempMessageId = `temp-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`;
+
+    addMessageToConversation(state.selectedAgentId, {
+      type: 'user_message',
+      text: promptText,
+      id: tempMessageId
     });
+
+    if (!isUserScrolledUpRef.current && conversationEndRef.current) {
+      requestAnimationFrame(() => {
+        conversationEndRef.current?.scrollIntoView({ behavior: 'smooth', block: 'end' });
+      });
+    }
+
+    try {
+      await followup(state.selectedAgentId, promptText);
+    } catch (error) {
+      console.error('Follow-up error:', error);
+    }
   };
-
-  const filteredAgents = agentsWithConfig.filter((agent) => {
-    if (statusFilter !== 'ALL' && agent.status !== statusFilter) return false;
-    if (!debouncedSearchQuery.trim()) return true;
-    const q = debouncedSearchQuery.toLowerCase();
-    // Cursor API structure: agent.source.repository
-    const agentRepo = (agent['source'] && typeof agent['source'] === 'object' && 'repository' in agent['source']
-        ? (typeof (agent['source'] as { repository?: string })['repository'] === 'string'
-            ? (agent['source'] as { repository: string })['repository']
-            : '')
-        : '') ||
-                     (typeof agent['repository'] === 'string' ? agent['repository'] : '') ||
-                     (typeof agent['repo'] === 'string' ? agent['repo'] : '');
-    return (
-      (agent.name ?? '').toLowerCase().includes(q) ||
-      agent.id.toLowerCase().includes(q) ||
-      agentRepo.toLowerCase().includes(q)
-    );
-  });
-
-  const pinnedAgents = filteredAgents.filter((agent) => pinnedAgentIds.includes(agent.id));
-  const otherAgents = filteredAgents.filter((agent) => !pinnedAgentIds.includes(agent.id));
 
   // Export conversation functions
   const exportConversation = (format: 'text' | 'json' | 'csv'): void => {
@@ -516,7 +708,7 @@ export const CloudAgentsDashboard: FC<CloudAgentsDashboardProps> = ({ initialCon
       content = messages.map((msg) => {
         const isUser = msg.type === 'user_message';
         const createdAt = (msg as { createdAt?: string }).createdAt
-          ? new Date((msg as { createdAt?: string }).createdAt!).toLocaleString()
+          ? new Date((msg as { createdAt?: string })['createdAt']!).toLocaleString()
           : 'N/A';
         return `${isUser ? 'User' : 'Assistant'} [${createdAt}]:\n${msg.text ?? ''}\n`;
       }).join('\n---\n\n');
@@ -527,7 +719,7 @@ export const CloudAgentsDashboard: FC<CloudAgentsDashboardProps> = ({ initialCon
       const rows = messages.map((msg) => {
         const isUser = msg.type === 'user_message';
         const createdAt = (msg as { createdAt?: string }).createdAt
-          ? new Date((msg as { createdAt?: string }).createdAt!).toISOString()
+          ? new Date((msg as { createdAt?: string })['createdAt']!).toISOString()
           : '';
         const text = (msg.text ?? '').replace(/"/g, '""');
         return `${isUser ? 'User' : 'Assistant'},"${createdAt}","${text}"`;
@@ -551,7 +743,7 @@ export const CloudAgentsDashboard: FC<CloudAgentsDashboardProps> = ({ initialCon
     const text = state.conversation.messages.map((msg) => {
       const isUser = msg.type === 'user_message';
       const createdAt = (msg as { createdAt?: string }).createdAt
-        ? new Date((msg as { createdAt?: string }).createdAt!).toLocaleString()
+        ? new Date((msg as { createdAt?: string })['createdAt']!).toLocaleString()
         : '';
       return `${isUser ? 'User' : 'Assistant'} [${createdAt}]:\n${msg.text ?? ''}`;
     }).join('\n\n---\n\n');
@@ -564,7 +756,7 @@ export const CloudAgentsDashboard: FC<CloudAgentsDashboardProps> = ({ initialCon
 
   return (
     <div className="flex h-full gap-2 sm:gap-3 p-2 sm:p-3 overflow-hidden flex-col lg:flex-row relative">
-      {/* Sidebar Collapse Button - Positioned in center like Cursor docs */}
+      {/* Sidebar Collapse Button */}
       {!sidebarCollapsed && (
         <button
           type="button"
@@ -600,7 +792,7 @@ export const CloudAgentsDashboard: FC<CloudAgentsDashboardProps> = ({ initialCon
         </button>
       )}
 
-      {/* Sidebar: Configs + Agents list */}
+      {/* Sidebar */}
       <aside className={`w-full lg:w-80 xl:w-96 flex-shrink-0 flex flex-col border border-border rounded-xl bg-card-raised overflow-hidden pattern-bg max-h-full lg:max-h-screen transition-all duration-200 ${
         sidebarCollapsed ? 'lg:w-0 lg:overflow-hidden lg:border-0 lg:p-0 lg:opacity-0' : ''
       }`}>
@@ -609,7 +801,6 @@ export const CloudAgentsDashboard: FC<CloudAgentsDashboardProps> = ({ initialCon
             <span className="text-xs font-semibold text-foreground uppercase tracking-wider">Cursor APIs</span>
           </div>
 
-          {/* Multi-select API filter */}
           {allConfigsForDisplay.length === 0 && (
             <p className="text-[0.7rem] text-muted-foreground">
               No configs found. Add APIs in Settings.
@@ -653,7 +844,7 @@ export const CloudAgentsDashboard: FC<CloudAgentsDashboardProps> = ({ initialCon
 
           {!primaryApiKey && (
             <p className="text-[0.7rem] text-amber-400">
-              ⚠️ No API key selected. Add APIs in Settings to view agents.
+              No API key selected. Add APIs in Settings to view agents.
             </p>
           )}
           {primaryApiKey && state.userInfo && (
@@ -664,7 +855,7 @@ export const CloudAgentsDashboard: FC<CloudAgentsDashboardProps> = ({ initialCon
           )}
           {primaryApiKey && state.userInfoError && (
             <p className="text-[0.7rem] text-red-400">
-              ❌ API key error: {state.userInfoError}
+              API key error: {state.userInfoError}
             </p>
           )}
         </div>
@@ -732,7 +923,7 @@ export const CloudAgentsDashboard: FC<CloudAgentsDashboardProps> = ({ initialCon
               </svg>
               <p className="text-sm text-muted-foreground font-medium mb-1">No agents found</p>
               <p className="text-xs text-muted-foreground">
-                {searchQuery.trim() 
+                {searchQuery.trim()
                   ? 'Try adjusting your search or filters'
                   : statusFilter !== 'ALL'
                     ? `No agents with status "${statusFilter.toLowerCase()}"`
@@ -741,290 +932,53 @@ export const CloudAgentsDashboard: FC<CloudAgentsDashboardProps> = ({ initialCon
             </div>
           )}
 
-          {pinnedAgents.map((agent) => {
-            const isSelected = agent.id === state.selectedAgentId;
-            const agentColor = agent.configColor ?? '#6b7280';
-            // Try to get repository from agent data, conversation metadata, or conversation messages
-            // Cursor API structure: agent.source.repository
-            const agentRepo = (agent['source'] && typeof agent['source'] === 'object' && 'repository' in agent['source']
-                ? (typeof (agent['source'] as { repository?: string })['repository'] === 'string'
-                    ? (agent['source'] as { repository: string })['repository']
-                    : undefined)
-                : undefined) ||
-                             (typeof agent['repository'] === 'string' ? agent['repository'] : undefined) ||
-                             (typeof agent['repo'] === 'string' ? agent['repo'] : undefined);
-            const agentConversation = state.conversationsByAgentId[agent.id];
-            // Also check conversation metadata for repository
-            const conversationRepo = (agentConversation && typeof agentConversation === 'object' && 'source' in agentConversation
-                ? (agentConversation['source'] && typeof agentConversation['source'] === 'object' && 'repository' in agentConversation['source']
-                    ? (typeof (agentConversation['source'] as { repository?: string })['repository'] === 'string'
-                        ? (agentConversation['source'] as { repository: string })['repository']
-                        : undefined)
-                    : undefined)
-                : undefined) ||
-              (agentConversation && typeof agentConversation === 'object' && 'repository' in agentConversation
-                ? (typeof agentConversation['repository'] === 'string' ? agentConversation['repository'] : undefined)
-                : undefined);
-            const finalRepo = agentRepo || conversationRepo;
-            const repoName = extractRepoName(finalRepo);
-            const isRunning = agent.status === 'RUNNING';
-            const createdAt = formatDateTime(agent['createdAt'] as string | undefined);
-            // Get last message time from conversation - look for any message with createdAt
-            const messages = agentConversation?.messages ?? [];
-            const lastUserMessage = messages
-              .filter((msg) => {
-                if (typeof msg === 'object' && msg !== null) {
-                  const msgCreatedAt = (msg as { createdAt?: string })['createdAt'];
-                  return msgCreatedAt && typeof msgCreatedAt === 'string';
-                }
-                return false;
-              })
-              .pop();
-            const lastMessageTime = lastUserMessage && typeof lastUserMessage === 'object' && 'createdAt' in lastUserMessage
-              ? formatDateTime((lastUserMessage as { createdAt?: string })['createdAt'])
-              : (agent['updatedAt'] ? formatDateTime(agent['updatedAt'] as string) : null);
-            
-            return (
-              <button
-                key={agent.id}
-                type="button"
-                onClick={() => void selectAgent(agent.id)}
-                className={`w-full text-left p-2.5 rounded-lg border text-xs transition-all focus:outline-none focus:ring-2 focus:ring-primary/50 ${
-                  isSelected
-                    ? 'border-primary bg-primary/10 shadow-sm'
-                    : 'border-border bg-card hover:bg-card-raised hover:border-primary/30'
-                }`}
-                style={isSelected ? { borderLeftColor: agentColor, borderLeftWidth: '3px' } : {}}
-                aria-label={`Select agent ${agent.name ?? 'Unnamed'}`}
-                aria-pressed={isSelected}
-              >
-                <div className="flex justify-between items-start gap-2">
-                  <div className="min-w-0 flex items-start gap-2 flex-1">
-                    <div className="relative flex-shrink-0 mt-1.5">
-                      {isRunning && (
-                        <div className="absolute -top-0.5 -left-0.5 w-3 h-3 border-2 border-emerald-400 rounded-full animate-ping opacity-75"></div>
-                      )}
-                    <div
-                        className={`w-2 h-2 rounded-full ${isRunning ? 'bg-emerald-400' : ''}`}
-                        style={{ backgroundColor: isRunning ? undefined : agentColor }}
-                    />
-                    </div>
-                    <div className="min-w-0 flex-1">
-                      <div className="font-medium text-foreground truncate text-xs mb-0.5">
-                        {agent.name ?? 'Unnamed Agent'}
-                      </div>
-                      <button
-                        type="button"
-                        onClick={(e) => {
-                          e.stopPropagation();
-                          void navigator.clipboard.writeText(repoName);
-                          setCopiedRepoName(agent.id);
-                          setTimeout(() => setCopiedRepoName(null), 2000);
-                        }}
-                        className="text-[0.65rem] text-muted-foreground truncate hover:text-foreground transition-colors flex items-center gap-1 group focus:outline-none focus:ring-2 focus:ring-primary/50 rounded"
-                        title={copiedRepoName === agent.id ? "Copied!" : "Click to copy repository name"}
-                        aria-label={`Copy repository name: ${repoName}`}
-                      >
-                        <span className="truncate">{repoName}</span>
-                        {copiedRepoName === agent.id ? (
-                          <svg className="w-3 h-3 text-primary flex-shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 13l4 4L19 7" />
-                          </svg>
-                        ) : (
-                          <svg className="w-3 h-3 opacity-0 group-hover:opacity-60 flex-shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M8 16H6a2 2 0 01-2-2V6a2 2 0 012-2h8a2 2 0 012 2v2m-6 12h8a2 2 0 002-2v-8a2 2 0 00-2-2h-8a2 2 0 00-2 2v8a2 2 0 002 2z" />
-                          </svg>
-                        )}
-                      </button>
-                      <div className="mt-1 flex items-center gap-1.5 flex-wrap">
-                        <span className={`text-[0.65rem] px-1.5 py-0.5 rounded border ${
-                          agent.status === 'RUNNING' ? 'border-emerald-700/50 bg-emerald-950/30 text-emerald-300' :
-                          agent.status === 'FINISHED' ? 'border-green-700/50 bg-green-950/30 text-green-300' :
-                          agent.status === 'ERROR' ? 'border-red-700/50 bg-red-950/30 text-red-300' :
-                          'border-border bg-card text-muted-foreground'
-                        }`}>
-                          {agent.status ?? 'UNKNOWN'}
-                        </span>
-                      </div>
-                      <div className="mt-1 space-y-0.5">
-                        <div className="text-[0.6rem] text-muted-foreground">Created: {createdAt}</div>
-                        {lastMessageTime ? (
-                          <div className="text-[0.6rem] text-muted-foreground">Last task: {lastMessageTime}</div>
-                        ) : agent['updatedAt'] ? (
-                          <div className="text-[0.6rem] text-muted-foreground">Updated: {formatDateTime(agent['updatedAt'] as string)}</div>
-                        ) : null}
-                      </div>
-                    </div>
-                  </div>
-                  <button
-                    type="button"
-                    onClick={(event) => {
-                      event.stopPropagation();
-                      togglePinned(agent.id);
-                    }}
-                    className="ml-1 p-1 hover:bg-primary/10 rounded transition-colors flex-shrink-0 focus:outline-none focus:ring-2 focus:ring-primary/50"
-                    title="Unpin agent"
-                    aria-label="Unpin agent"
-                  >
-                    <svg className="w-3.5 h-3.5 text-primary" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 5a2 2 0 012-2h10a2 2 0 012 2v7a2 2 0 01-2 2H7a2 2 0 01-2-2V5z" />
-                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 15v6m-3-3h6" />
-                    </svg>
-                  </button>
-                </div>
-              </button>
-            );
-          })}
-          {otherAgents.map((agent) => {
-            const isSelected = agent.id === state.selectedAgentId;
-            const agentColor = agent.configColor ?? '#6b7280';
-            // Try to get repository from agent data, conversation metadata, or conversation messages
-            // Cursor API structure: agent.source.repository
-            const agentRepo = (agent['source'] && typeof agent['source'] === 'object' && 'repository' in agent['source']
-                ? (typeof (agent['source'] as { repository?: string })['repository'] === 'string'
-                    ? (agent['source'] as { repository: string })['repository']
-                    : undefined)
-                : undefined) ||
-                             (typeof agent['repository'] === 'string' ? agent['repository'] : undefined) ||
-                             (typeof agent['repo'] === 'string' ? agent['repo'] : undefined);
-            const agentConversation = state.conversationsByAgentId[agent.id];
-            // Also check conversation metadata for repository
-            const conversationRepo = (agentConversation && typeof agentConversation === 'object' && 'source' in agentConversation
-                ? (agentConversation['source'] && typeof agentConversation['source'] === 'object' && 'repository' in agentConversation['source']
-                    ? (typeof (agentConversation['source'] as { repository?: string })['repository'] === 'string'
-                        ? (agentConversation['source'] as { repository: string })['repository']
-                        : undefined)
-                    : undefined)
-                : undefined) ||
-              (agentConversation && typeof agentConversation === 'object' && 'repository' in agentConversation
-                ? (typeof agentConversation['repository'] === 'string' ? agentConversation['repository'] : undefined)
-                : undefined);
-            const finalRepo = agentRepo || conversationRepo;
-            const repoName = extractRepoName(finalRepo);
-            const isRunning = agent.status === 'RUNNING';
-            const createdAt = formatDateTime(agent['createdAt'] as string | undefined);
-            // Get last message time from conversation - look for any message with createdAt
-            const messages = agentConversation?.messages ?? [];
-            const lastUserMessage = messages
-              .filter((msg) => {
-                if (typeof msg === 'object' && msg !== null) {
-                  const msgCreatedAt = (msg as { createdAt?: string })['createdAt'];
-                  return msgCreatedAt && typeof msgCreatedAt === 'string';
-                }
-                return false;
-              })
-              .pop();
-            const lastMessageTime = lastUserMessage && typeof lastUserMessage === 'object' && 'createdAt' in lastUserMessage
-              ? formatDateTime((lastUserMessage as { createdAt?: string })['createdAt'])
-              : (agent['updatedAt'] ? formatDateTime(agent['updatedAt'] as string) : null);
-            
-            return (
-              <button
-                key={agent.id}
-                type="button"
-                onClick={() => void selectAgent(agent.id)}
-                className={`w-full text-left p-2.5 rounded-lg border text-xs transition-all focus:outline-none focus:ring-2 focus:ring-primary/50 ${
-                  isSelected
-                    ? 'border-primary bg-primary/10 shadow-sm'
-                    : 'border-border bg-card hover:bg-card-raised hover:border-primary/30'
-                }`}
-                style={isSelected ? { borderLeftColor: agentColor, borderLeftWidth: '3px' } : {}}
-                aria-label={`Select agent ${agent.name ?? 'Unnamed'}`}
-                aria-pressed={isSelected}
-              >
-                <div className="flex justify-between items-start gap-2">
-                  <div className="min-w-0 flex items-start gap-2 flex-1">
-                    <div className="relative flex-shrink-0 mt-1.5">
-                      {isRunning && (
-                        <div className="absolute -top-0.5 -left-0.5 w-3 h-3 border-2 border-emerald-400 rounded-full animate-ping opacity-75"></div>
-                      )}
-                    <div
-                        className={`w-2 h-2 rounded-full ${isRunning ? 'bg-emerald-400' : ''}`}
-                        style={{ backgroundColor: isRunning ? undefined : agentColor }}
-                    />
-                    </div>
-                    <div className="min-w-0 flex-1">
-                      <div className="font-medium text-foreground truncate text-xs mb-0.5">
-                        {agent.name ?? 'Unnamed Agent'}
-                      </div>
-                      <button
-                        type="button"
-                        onClick={(e) => {
-                          e.stopPropagation();
-                          void navigator.clipboard.writeText(repoName);
-                          setCopiedRepoName(agent.id);
-                          setTimeout(() => setCopiedRepoName(null), 2000);
-                        }}
-                        className="text-[0.65rem] text-muted-foreground truncate hover:text-foreground transition-colors flex items-center gap-1 group focus:outline-none focus:ring-2 focus:ring-primary/50 rounded"
-                        title={copiedRepoName === agent.id ? "Copied!" : "Click to copy repository name"}
-                        aria-label={`Copy repository name: ${repoName}`}
-                      >
-                        <span className="truncate">{repoName}</span>
-                        {copiedRepoName === agent.id ? (
-                          <svg className="w-3 h-3 text-primary flex-shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 13l4 4L19 7" />
-                          </svg>
-                        ) : (
-                          <svg className="w-3 h-3 opacity-0 group-hover:opacity-60 flex-shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M8 16H6a2 2 0 01-2-2V6a2 2 0 012-2h8a2 2 0 012 2v2m-6 12h8a2 2 0 002-2v-8a2 2 0 00-2-2h-8a2 2 0 00-2 2v8a2 2 0 002 2z" />
-                          </svg>
-                        )}
-                      </button>
-                      <div className="mt-1 flex items-center gap-1.5 flex-wrap">
-                        <span className={`text-[0.65rem] px-1.5 py-0.5 rounded border ${
-                          agent.status === 'RUNNING' ? 'border-emerald-700/50 bg-emerald-950/30 text-emerald-300' :
-                          agent.status === 'FINISHED' ? 'border-green-700/50 bg-green-950/30 text-green-300' :
-                          agent.status === 'ERROR' ? 'border-red-700/50 bg-red-950/30 text-red-300' :
-                          'border-border bg-card text-muted-foreground'
-                        }`}>
-                          {agent.status ?? 'UNKNOWN'}
-                        </span>
-                      </div>
-                      <div className="mt-1 space-y-0.5">
-                        <div className="text-[0.6rem] text-muted-foreground">Created: {createdAt}</div>
-                        {lastMessageTime ? (
-                          <div className="text-[0.6rem] text-muted-foreground">Last task: {lastMessageTime}</div>
-                        ) : agent['updatedAt'] ? (
-                          <div className="text-[0.6rem] text-muted-foreground">Updated: {formatDateTime(agent['updatedAt'] as string)}</div>
-                        ) : null}
-                      </div>
-                    </div>
-                  </div>
-                  <button
-                    type="button"
-                    onClick={(event) => {
-                      event.stopPropagation();
-                      togglePinned(agent.id);
-                    }}
-                    className="ml-1 p-1 hover:bg-card-raised rounded transition-colors flex-shrink-0 focus:outline-none focus:ring-2 focus:ring-primary/50"
-                    title="Pin agent"
-                    aria-label="Pin agent"
-                  >
-                    <svg className="w-3.5 h-3.5 text-muted-foreground hover:text-foreground" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 5a2 2 0 012-2h10a2 2 0 012 2v7a2 2 0 01-2 2H7a2 2 0 01-2-2V5z" />
-                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 15v6m-3-3h6" />
-                    </svg>
-                  </button>
-                </div>
-              </button>
-            );
-          })}
+          {pinnedAgents.map((agent) => (
+            <AgentCard
+              key={agent.id}
+              agent={agent}
+              isSelected={agent.id === state.selectedAgentId}
+              isPinned={true}
+              state={state}
+              selectAgent={selectAgent}
+              togglePinned={togglePinned}
+              formatDateTime={formatDateTime}
+              extractRepoName={extractRepoName}
+              setCopiedRepoName={setCopiedRepoName}
+              copiedRepoName={copiedRepoName}
+            />
+          ))}
+
+          {otherAgents.map((agent) => (
+            <AgentCard
+              key={agent.id}
+              agent={agent}
+              isSelected={agent.id === state.selectedAgentId}
+              isPinned={false}
+              state={state}
+              selectAgent={selectAgent}
+              togglePinned={togglePinned}
+              formatDateTime={formatDateTime}
+              extractRepoName={extractRepoName}
+              setCopiedRepoName={setCopiedRepoName}
+              copiedRepoName={copiedRepoName}
+            />
+          ))}
         </div>
       </aside>
 
-      {/* Main content: conversation + follow-up */}
+      {/* Main content */}
       <section className={`flex-1 flex flex-col gap-2 min-h-0 overflow-hidden w-full lg:w-auto transition-all duration-200 ${
         sidebarCollapsed ? 'lg:ml-0' : ''
       }`}>
-        {/* Agent Details (compact header, only when agent selected) */}
+        {/* Agent Details */}
         {currentAgent && (
           <div className="flex-shrink-0 px-2 sm:px-3 md:px-4 py-2 sm:py-3 border border-border rounded-xl bg-card-raised">
             <div className="flex items-center justify-between gap-2 sm:gap-3 md:gap-4 flex-wrap">
               <div className="flex items-center gap-3 flex-wrap flex-1 min-w-0">
-              {currentAgent.configColor && (
-                <div className="w-2.5 h-2.5 rounded-full flex-shrink-0" style={{ backgroundColor: currentAgent.configColor }} />
-              )}
-              <span className="text-sm font-semibold text-foreground">{currentAgent.name ?? 'Unnamed Agent'}</span>
+                {currentAgent.configColor && (
+                  <div className="w-2.5 h-2.5 rounded-full flex-shrink-0" style={{ backgroundColor: currentAgent.configColor }} />
+                )}
+                <span className="text-sm font-semibold text-foreground">{currentAgent.name ?? 'Unnamed Agent'}</span>
                 <button
                   type="button"
                   onClick={() => {
@@ -1038,44 +992,44 @@ export const CloudAgentsDashboard: FC<CloudAgentsDashboardProps> = ({ initialCon
                     <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
                   </svg>
                 </button>
-              {branchName && (
+                {branchName && (
                   <div className="flex items-center gap-2 flex-wrap">
-                  <span className="text-muted-foreground">•</span>
-                  <button
-                    type="button"
-                    onClick={() => {
-                      void navigator.clipboard.writeText(branchName);
-                    }}
-                    className="text-xs font-mono text-primary hover:text-primary-hover transition-colors cursor-pointer flex items-center gap-1"
-                    title="Click to copy branch name"
-                  >
+                    <span className="text-muted-foreground">•</span>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        void navigator.clipboard.writeText(branchName);
+                      }}
+                      className="text-xs font-mono text-primary hover:text-primary-hover transition-colors cursor-pointer flex items-center gap-1"
+                      title="Click to copy branch name"
+                    >
                       <span className="text-primary">{branchName}</span>
-                    <svg className="w-3 h-3 opacity-60" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M8 16H6a2 2 0 01-2-2V6a2 2 0 012-2h8a2 2 0 012 2v2m-6 12h8a2 2 0 002-2v-8a2 2 0 00-2-2h-8a2 2 0 00-2 2v8a2 2 0 002 2z" />
-                    </svg>
-                  </button>
+                      <svg className="w-3 h-3 opacity-60" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M8 16H6a2 2 0 01-2-2V6a2 2 0 012-2h8a2 2 0 012 2v2m-6 12h8a2 2 0 002-2v-8a2 2 0 00-2-2h-8a2 2 0 00-2 2v8a2 2 0 002 2z" />
+                      </svg>
+                    </button>
                   </div>
-              )}
+                )}
                 {baseBranch && baseBranch !== branchName && (
                   <div className="flex items-center gap-2 flex-wrap">
-                  <span className="text-muted-foreground">•</span>
+                    <span className="text-muted-foreground">•</span>
                     <span className="text-muted-foreground text-xs">from</span>
-                  <button
-                    type="button"
-                    onClick={() => {
+                    <button
+                      type="button"
+                      onClick={() => {
                         void navigator.clipboard.writeText(baseBranch);
-                    }}
-                    className="text-xs font-mono text-muted-foreground hover:text-foreground transition-colors cursor-pointer flex items-center gap-1"
+                      }}
+                      className="text-xs font-mono text-muted-foreground hover:text-foreground transition-colors cursor-pointer flex items-center gap-1"
                       title="Click to copy base branch name"
-                  >
+                    >
                       <span>{baseBranch}</span>
-                    <svg className="w-3 h-3 opacity-60" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M8 16H6a2 2 0 01-2-2V6a2 2 0 012-2h8a2 2 0 012 2v2m-6 12h8a2 2 0 002-2v-8a2 2 0 00-2-2h-8a2 2 0 00-2 2v8a2 2 0 002 2z" />
-                    </svg>
-                  </button>
+                      <svg className="w-3 h-3 opacity-60" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M8 16H6a2 2 0 01-2-2V6a2 2 0 012-2h8a2 2 0 012 2v2m-6 12h8a2 2 0 002-2v-8a2 2 0 00-2-2h-8a2 2 0 00-2 2v8a2 2 0 002 2z" />
+                      </svg>
+                    </button>
                   </div>
-              )}
-            </div>
+                )}
+              </div>
               {requestId && (
                 <div className="flex items-center gap-2 min-w-0 flex-1">
                   <button
@@ -1102,24 +1056,24 @@ export const CloudAgentsDashboard: FC<CloudAgentsDashboardProps> = ({ initialCon
                 }`}>
                   {currentAgent.status ?? 'UNKNOWN'}
                 </span>
-              <button
-                type="button"
-                onClick={() => void stop(currentAgent.id)}
+                <button
+                  type="button"
+                  onClick={() => void stop(currentAgent.id)}
                   className="px-2.5 py-1 text-xs font-medium rounded-lg bg-amber-950/50 border border-amber-700/50 text-amber-300 hover:bg-amber-900/50 hover:border-amber-600 disabled:opacity-50 transition-colors focus:outline-none focus:ring-2 focus:ring-amber-500/50"
-                disabled={actionsState.busy}
+                  disabled={actionsState.busy}
                   aria-label="Stop agent"
-              >
-                Stop
-              </button>
-              <button
-                type="button"
+                >
+                  Stop
+                </button>
+                <button
+                  type="button"
                   onClick={() => setShowDeleteConfirm(currentAgent.id)}
                   className="px-2.5 py-1 text-xs font-medium rounded-lg bg-red-950/50 border border-red-700/50 text-red-300 hover:bg-red-900/50 hover:border-red-600 disabled:opacity-50 transition-colors focus:outline-none focus:ring-2 focus:ring-red-500/50"
-                disabled={actionsState.busy}
+                  disabled={actionsState.busy}
                   aria-label="Delete agent"
-              >
-                Delete
-              </button>
+                >
+                  Delete
+                </button>
               </div>
             </div>
           </div>
@@ -1203,11 +1157,12 @@ export const CloudAgentsDashboard: FC<CloudAgentsDashboardProps> = ({ initialCon
               </button>
             </div>
           </div>
-          {/* New Messages Button - appears when user scrolls up and new messages arrive */}
+
+          {/* New Messages Button - scrolls to first unread message */}
           {showNewMessagesButton && state.pendingMessageCount > 0 && (
             <button
               type="button"
-              onClick={scrollToBottom}
+              onClick={scrollToFirstUnread}
               className="absolute bottom-4 left-1/2 -translate-x-1/2 z-20 bg-primary text-primary-foreground px-4 py-2 rounded-full shadow-lg text-sm font-medium animate-fadeInUp flex items-center gap-2 hover:bg-primary-hover transition-colors"
             >
               <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
@@ -1216,8 +1171,30 @@ export const CloudAgentsDashboard: FC<CloudAgentsDashboardProps> = ({ initialCon
               {state.pendingMessageCount} new message{state.pendingMessageCount > 1 ? 's' : ''}
             </button>
           )}
-          <div ref={conversationContainerRef} className="flex-1 overflow-y-auto p-3 sm:p-4 space-y-3 scroll-smooth">
-            {!state.selectedAgentId && (
+
+          {/* Loading skeleton when loading conversation */}
+          {state.selectedAgentId && state.isConversationLoading && (
+            <div className="flex-1 overflow-y-auto p-3 sm:p-4 space-y-3">
+              <div className="flex gap-3 animate-pulse">
+                <div className="w-8 h-8 rounded-full bg-purple-500/20"></div>
+                <div className="flex-1 space-y-2">
+                  <div className="h-4 bg-purple-500/20 rounded w-1/4"></div>
+                  <div className="h-16 bg-purple-500/20 rounded"></div>
+                </div>
+              </div>
+              <div className="flex gap-3 animate-pulse">
+                <div className="w-8 h-8 rounded-full bg-purple-500/20"></div>
+                <div className="flex-1 space-y-2">
+                  <div className="h-4 bg-purple-500/20 rounded w-1/4"></div>
+                  <div className="h-24 bg-purple-500/20 rounded"></div>
+                </div>
+              </div>
+            </div>
+          )}
+
+          {/* Empty state when no agent selected */}
+          {!state.selectedAgentId && !state.isConversationLoading && (
+            <div className="flex-1 overflow-y-auto p-3 sm:p-4">
               <EmptyState
                 icon={
                   <svg className="w-16 h-16 text-muted-foreground/30" fill="none" stroke="currentColor" viewBox="0 0 24 24">
@@ -1231,8 +1208,12 @@ export const CloudAgentsDashboard: FC<CloudAgentsDashboardProps> = ({ initialCon
                   href: '/cloud-agents/orchestrations'
                 }}
               />
-            )}
-            {state.selectedAgentId && (!state.conversation?.messages || state.conversation.messages.length === 0) && (
+            </div>
+          )}
+
+          {/* Empty state when agent selected but no messages */}
+          {state.selectedAgentId && !state.isConversationLoading && (!state.conversation?.messages || state.conversation.messages.length === 0) && (
+            <div className="flex-1 overflow-y-auto p-3 sm:p-4">
               <EmptyState
                 icon={
                   <svg className="w-16 h-16 text-muted-foreground/30" fill="none" stroke="currentColor" viewBox="0 0 24 24">
@@ -1242,170 +1223,177 @@ export const CloudAgentsDashboard: FC<CloudAgentsDashboardProps> = ({ initialCon
                 title="No messages yet"
                 description="This agent hasn't started working yet. Send a prompt below to begin the conversation and task execution."
               />
-            )}
-            {/* Loading indicator when agent is thinking/responding - only show if no messages yet or after last message */}
-            {state.selectedAgentId && 
-             currentAgent?.status === 'RUNNING' && 
-             state.conversation?.messages && 
-             state.conversation.messages.length > 0 && (
-              <div className="flex items-center justify-start py-3 px-4">
-                <div className="flex items-center gap-3 bg-[#2A2535]/50 backdrop-blur-sm border border-purple-500/20 rounded-2xl px-4 py-3">
-                  <div className="relative">
-                    <div className="absolute -top-1 -left-1 w-3 h-3 bg-purple-400 rounded-full animate-ping opacity-75"></div>
-                    <svg className="animate-spin h-5 w-5 text-purple-400" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24">
-                      <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"></circle>
-                      <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
-                    </svg>
-                  </div>
-                  <div className="flex flex-col">
-                    <span className="text-sm font-medium text-purple-300">Thinking...</span>
-                    <span className="text-xs text-muted-foreground/70">Processing your request</span>
+            </div>
+          )}
+
+          {/* Messages list */}
+          {state.selectedAgentId && !state.isConversationLoading && state.conversation?.messages && state.conversation.messages.length > 0 && (
+            <div ref={conversationContainerRef} className="flex-1 overflow-y-auto p-3 sm:p-4 space-y-3 scroll-smooth">
+              {/* Thinking indicator */}
+              {currentAgent?.status === 'RUNNING' && (
+                <div className="flex items-center justify-start py-3 px-4">
+                  <div className="flex items-center gap-3 bg-[#2A2535]/50 backdrop-blur-sm border border-purple-500/20 rounded-2xl px-4 py-3">
+                    <div className="relative">
+                      <div className="absolute -top-1 -left-1 w-3 h-3 bg-purple-400 rounded-full animate-ping opacity-75"></div>
+                      <svg className="animate-spin h-5 w-5 text-purple-400" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24">
+                        <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"></circle>
+                        <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
+                      </svg>
+                    </div>
+                    <div className="flex flex-col">
+                      <span className="text-sm font-medium text-purple-300">Thinking...</span>
+                      <span className="text-xs text-muted-foreground/70">Processing your request</span>
+                    </div>
                   </div>
                 </div>
-              </div>
-            )}
-            {state.conversation?.messages?.map((msg, index, arr) => {
-              const isUser = msg.type === 'user_message';
-              const createdAtRaw = (msg as { createdAt?: string }).createdAt;
-              const createdAtLabel = createdAtRaw 
-                ? new Date(createdAtRaw).toLocaleString('en-US', {
-                    month: 'short',
-                    day: 'numeric',
-                    year: 'numeric',
-                    hour: '2-digit',
-                    minute: '2-digit',
-                    second: '2-digit',
-                    hour12: false
-                  })
-                : undefined;
+              )}
 
-              const handleCopyMessage = (): void => {
-                if (!msg.text || !msg.id) return;
-                try {
-                  void navigator.clipboard.writeText(msg.text);
-                  setCopiedMessageId(msg.id);
-                  setTimeout(() => setCopiedMessageId(null), 2000);
-                } catch {
-                  // ignore clipboard errors
-                }
-              };
+              {state.conversation.messages.map((msg, index, arr) => {
+                const isUser = msg.type === 'user_message';
+                const isUnread = msg.id && state.unreadMessageIds.has(msg.id) && !msg.id.startsWith('temp-');
+                const createdAtRaw = (msg as { createdAt?: string }).createdAt;
+                const createdAtLabel = createdAtRaw
+                  ? new Date(createdAtRaw).toLocaleString('en-US', {
+                      month: 'short',
+                      day: 'numeric',
+                      year: 'numeric',
+                      hour: '2-digit',
+                      minute: '2-digit',
+                      second: '2-digit',
+                      hour12: false
+                    })
+                  : undefined;
 
-              // Check if this is the last assistant message in a sequence (for copy full reply button)
-              const nextMsg = arr[index + 1];
-              const isLastAssistantMessage = !isUser && (
-                index === arr.length - 1 || 
-                (nextMsg !== undefined && nextMsg.type === 'user_message')
-              );
-
-              // Find the full assistant reply (only for last message in sequence)
-              const findFullAssistantReply = (): string => {
-                if (isUser || !isLastAssistantMessage) return '';
-                let fullReply = msg.text ?? '';
-                // Look ahead for continuation messages
-                for (let i = index + 1; i < (state.conversation?.messages?.length ?? 0); i++) {
-                  const nextMsg = state.conversation?.messages?.[i];
-                  if (nextMsg && nextMsg.type === 'assistant_message') {
-                    fullReply += '\n\n' + (nextMsg.text ?? '');
-                  } else {
-                    break;
+                const handleCopyMessage = (): void => {
+                  if (!msg.text || !msg.id) return;
+                  try {
+                    void navigator.clipboard.writeText(msg.text);
+                    setCopiedMessageId(msg.id);
+                    setTimeout(() => setCopiedMessageId(null), 2000);
+                  } catch {
+                    // ignore clipboard errors
                   }
-                }
-                return fullReply;
-              };
+                };
 
-              const handleCopyFullReply = (): void => {
-                const fullReply = findFullAssistantReply();
-                if (!fullReply) return;
-                try {
-                  void navigator.clipboard.writeText(fullReply);
-                } catch {
-                  // ignore clipboard errors
-                }
-              };
+                const nextMsg = arr[index + 1];
+                const isLastAssistantMessage = !isUser && (
+                  index === arr.length - 1 ||
+                  (nextMsg !== undefined && nextMsg.type === 'user_message')
+                );
 
-              // Check if this is a newly added message (temporary ID)
-              const isNewMessage = msg.id?.startsWith('temp-');
-              
-              return (
-                <div
-                  key={msg.id ?? `${msg.type}-${index}`}
-                  className={`flex gap-3 ${isUser ? 'justify-end' : 'justify-start'} ${isNewMessage ? 'animate-fadeInUp' : ''}`}
-                >
-                  <div className={`max-w-[85%] sm:max-w-[75%] rounded-2xl px-4 py-3 backdrop-blur-sm ${
-                    isUser
-                      ? 'bg-primary/50 border-2 border-primary/70 shadow-lg'
-                      : 'bg-[#2A2535]/95 border-2 border-purple-500/30 shadow-lg'
-                  }`}>
-                    <div className="flex items-center gap-2 mb-2 flex-wrap">
-                      <span className={`text-xs font-semibold ${isUser ? 'text-[#E879F9]' : 'text-[#D8B4FE]'}`}>
-                        {isUser ? 'You' : 'Assistant'}
-                      </span>
-                      {createdAtLabel && (
-                        <span className="text-[0.65rem] text-muted-foreground/70">
-                          {new Date(createdAtRaw!).toLocaleDateString('en-US', { month: 'short', day: 'numeric' })} • {new Date(createdAtRaw!).toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit', hour12: false })}
+                const findFullAssistantReply = (): string => {
+                  if (isUser || !isLastAssistantMessage) return '';
+                  let fullReply = msg.text ?? '';
+                  for (let i = index + 1; i < (state.conversation?.messages?.length ?? 0); i++) {
+                    const nextMsg = state.conversation?.messages?.[i];
+                    if (nextMsg && nextMsg.type === 'assistant_message') {
+                      fullReply += '\n\n' + (nextMsg.text ?? '');
+                    } else {
+                      break;
+                    }
+                  }
+                  return fullReply;
+                };
+
+                const handleCopyFullReply = (): void => {
+                  const fullReply = findFullAssistantReply();
+                  if (!fullReply) return;
+                  try {
+                    void navigator.clipboard.writeText(fullReply);
+                  } catch {
+                    // ignore clipboard errors
+                  }
+                };
+
+                const isNewMessage = msg.id?.startsWith('temp-');
+
+                return (
+                  <div
+                    id={msg.id ? `message-${msg.id}` : undefined}
+                    key={msg.id ?? `${msg.type}-${index}`}
+                    className={`flex gap-3 ${isUser ? 'justify-end' : 'justify-start'} ${isNewMessage ? 'animate-fadeInUp' : ''} ${isUnread ? 'bg-unread-highlight/30 rounded-lg -mx-2 px-2' : ''}`}
+                  >
+                    <div className={`max-w-[85%] sm:max-w-[75%] rounded-2xl px-4 py-3 backdrop-blur-sm ${
+                      isUser
+                        ? 'bg-primary/50 border-2 border-primary/70 shadow-lg'
+                        : 'bg-[#2A2535]/95 border-2 border-purple-500/30 shadow-lg'
+                    }`}>
+                      <div className="flex items-center gap-2 mb-2 flex-wrap">
+                        <span className={`text-xs font-semibold ${isUser ? 'text-[#E879F9]' : 'text-[#D8B4FE]'}`}>
+                          {isUser ? 'You' : 'Assistant'}
                         </span>
-                      )}
-                    </div>
-                    <div className="whitespace-pre-wrap text-sm text-foreground leading-relaxed mb-2 break-words">
-                      {msg.text ?? ''}
-                    </div>
-                    {!isUser && msg.text && (
-                      <div className="mt-2 pt-2 border-t border-border/30">
-                        <div className="flex items-center gap-2 text-xs text-muted-foreground/60">
-                          <span>Message ID: <code className="font-mono text-[0.65rem]">{msg.id?.slice(0, 8) || 'N/A'}</code></span>
-                          {msg.text.length > 0 && (
-                            <span>• {msg.text.length} characters</span>
-                          )}
-                        </div>
+                        {createdAtLabel && (
+                          <span className="text-[0.65rem] text-muted-foreground/70">
+                            {new Date(createdAtRaw!).toLocaleDateString('en-US', { month: 'short', day: 'numeric' })} • {new Date(createdAtRaw!).toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit', hour12: false })}
+                          </span>
+                        )}
+                        {isUnread && (
+                          <span className="text-[0.6rem] px-1.5 py-0.5 bg-primary/20 text-primary rounded-full">
+                            New
+                          </span>
+                        )}
                       </div>
-                    )}
-                    <div className="flex items-center gap-1.5">
-                      {msg.text && msg.id && (
-                        <button
-                          type="button"
-                          onClick={handleCopyMessage}
-                          className="p-1 hover:bg-card-raised/50 rounded transition-colors opacity-60 hover:opacity-100"
-                          title={copiedMessageId === msg.id ? "Copied!" : "Copy message"}
-                        >
-                          {copiedMessageId === msg.id ? (
-                            <svg className="w-3.5 h-3.5 text-primary" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 13l4 4L19 7" />
-                            </svg>
-                          ) : (
-                            <svg className="w-3.5 h-3.5 text-muted-foreground" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M8 16H6a2 2 0 01-2-2V6a2 2 0 012-2h8a2 2 0 012 2v2m-6 12h8a2 2 0 002-2v-8a2 2 0 00-2-2h-8a2 2 0 00-2 2v8a2 2 0 002 2z" />
-                            </svg>
-                          )}
-                        </button>
+                      <div className="whitespace-pre-wrap text-sm text-foreground leading-relaxed mb-2 break-words">
+                        {msg.text ?? ''}
+                      </div>
+                      {!isUser && msg.text && (
+                        <div className="mt-2 pt-2 border-t border-border/30">
+                          <div className="flex items-center gap-2 text-xs text-muted-foreground/60">
+                            <span>Message ID: <code className="font-mono text-[0.65rem]">{msg.id?.slice(0, 8) || 'N/A'}</code></span>
+                            {msg.text.length > 0 && (
+                              <span>• {msg.text.length} characters</span>
+                            )}
+                          </div>
+                        </div>
                       )}
-                      {!isUser && isLastAssistantMessage && msg.text && msg.id && (
-                        <button
-                          type="button"
-                          onClick={handleCopyFullReply}
-                          className="p-1 hover:bg-card-raised/50 rounded transition-colors opacity-60 hover:opacity-100"
-                          title={copiedMessageId === `full-${msg.id}` ? "Copied!" : "Copy full reply"}
-                        >
-                          {copiedMessageId === `full-${msg.id}` ? (
-                            <svg className="w-3.5 h-3.5 text-primary" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 13l4 4L19 7" />
-                            </svg>
-                          ) : (
-                            <svg className="w-3.5 h-3.5 text-muted-foreground" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z" />
-                            </svg>
-                          )}
-                        </button>
-                      )}
+                      <div className="flex items-center gap-1.5">
+                        {msg.text && msg.id && (
+                          <button
+                            type="button"
+                            onClick={handleCopyMessage}
+                            className="p-1 hover:bg-card-raised/50 rounded transition-colors opacity-60 hover:opacity-100"
+                            title={copiedMessageId === msg.id ? "Copied!" : "Copy message"}
+                          >
+                            {copiedMessageId === msg.id ? (
+                              <svg className="w-3.5 h-3.5 text-primary" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 13l4 4L19 7" />
+                              </svg>
+                            ) : (
+                              <svg className="w-3.5 h-3.5 text-muted-foreground" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M8 16H6a2 2 0 01-2-2V6a2 2 0 012-2h8a2 2 0 012 2v2m-6 12h8a2 2 0 002-2v-8a2 2 0 00-2-2h-8a2 2 0 00-2 2v8a2 2 0 002 2z" />
+                              </svg>
+                            )}
+                          </button>
+                        )}
+                        {!isUser && isLastAssistantMessage && msg.text && msg.id && (
+                          <button
+                            type="button"
+                            onClick={handleCopyFullReply}
+                            className="p-1 hover:bg-card-raised/50 rounded transition-colors opacity-60 hover:opacity-100"
+                            title={copiedMessageId === `full-${msg.id}` ? "Copied!" : "Copy full reply"}
+                          >
+                            {copiedMessageId === `full-${msg.id}` ? (
+                              <svg className="w-3.5 h-3.5 text-primary" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 13l4 4L19 7" />
+                              </svg>
+                            ) : (
+                              <svg className="w-3.5 h-3.5 text-muted-foreground" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z" />
+                              </svg>
+                            )}
+                          </button>
+                        )}
+                      </div>
                     </div>
                   </div>
-                </div>
-              );
-            })}
-            <div ref={conversationEndRef} />
-          </div>
+                );
+              })}
+              <div ref={conversationEndRef} />
+            </div>
+          )}
         </div>
 
-        {/* Follow-up Panel (Fixed at bottom) */}
+        {/* Follow-up Panel */}
         <div className="flex-shrink-0 border-t border-border bg-card-raised p-2 sm:p-3 lg:p-4">
           <form onSubmit={currentAgent ? handleFollowup : handleLaunch} className="space-y-2 sm:space-y-3">
             <div className="flex flex-col sm:flex-row gap-2 sm:gap-3 items-end">
@@ -1424,20 +1412,20 @@ export const CloudAgentsDashboard: FC<CloudAgentsDashboardProps> = ({ initialCon
                       />
                     )}
                     <div className="relative">
-                    <select
+                      <select
                         className="w-full bg-card border border-border text-sm text-foreground rounded-lg px-3 py-2 pr-8 focus:outline-none focus:ring-2 focus:ring-primary/50 focus:border-primary/50 appearance-none"
-                      value={selectedRepo}
-                      onChange={(e) => setSelectedRepo(e.target.value)}
-                    >
-                      <option value="">Select repository</option>
+                        value={selectedRepo}
+                        onChange={(e) => setSelectedRepo(e.target.value)}
+                      >
+                        <option value="">Select repository</option>
                         {repositories
                           .filter((repo) => !repoSearchQuery || repo.toLowerCase().includes(repoSearchQuery.toLowerCase()))
                           .map((repo) => (
-                        <option key={repo} value={repo}>
-                          {repo}
-                        </option>
-                      ))}
-                    </select>
+                            <option key={repo} value={repo}>
+                              {repo}
+                            </option>
+                          ))}
+                      </select>
                       <div className="absolute inset-y-0 right-0 flex items-center pr-2 pointer-events-none">
                         <svg className="w-4 h-4 text-muted-foreground" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                           <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 9l-7 7-7-7" />
@@ -1494,8 +1482,8 @@ export const CloudAgentsDashboard: FC<CloudAgentsDashboardProps> = ({ initialCon
                 </div>
                 {launchFeedback && (
                   <div className={`mt-2 px-3 py-2 rounded-lg text-xs ${
-                    launchFeedback.type === 'success' 
-                      ? 'bg-green-950/30 border border-green-700/50 text-green-300' 
+                    launchFeedback.type === 'success'
+                      ? 'bg-green-950/30 border border-green-700/50 text-green-300'
                       : 'bg-red-950/30 border border-red-700/50 text-red-300'
                   }`}>
                     {launchFeedback.message}
