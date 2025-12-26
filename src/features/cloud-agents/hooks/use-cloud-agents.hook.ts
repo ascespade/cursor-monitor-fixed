@@ -61,7 +61,7 @@ export function useCloudAgents(options: UseCloudAgentsOptions = {}): {
     isConversationLoading: false
   });
 
-  const { configId, apiKey, pollIntervalMs, conversationPollIntervalMs = 3000 } = options;
+  const { configId, apiKey, pollIntervalMs, conversationPollIntervalMs = 5000 } = options;
 
   // Refs for polling management
   const abortControllerRef = useRef<AbortController | null>(null);
@@ -342,42 +342,44 @@ export function useCloudAgents(options: UseCloudAgentsOptions = {}): {
     }
 
     const agentId = state.selectedAgentId;
-    const agent = state.agents.find(a => a.id === agentId);
 
-    // Only poll if agent is RUNNING
+    // Check if agent is running
+    const agent = state.agents.find(a => a.id === agentId);
     if (agent?.status !== 'RUNNING') {
       return;
     }
 
-    // Don't poll if we're already polling this agent
-    if (isPollingRef.current && currentAgentIdRef.current === agentId) {
-      return;
-    }
-
+    // Start polling for this agent
     isPollingRef.current = true;
     currentAgentIdRef.current = agentId;
 
     const pollInterval = conversationPollIntervalMs;
 
     const poll = async () => {
-      // Check if we should still be polling
+      // Verify we should still be polling
       if (!isPollingRef.current || currentAgentIdRef.current !== agentId) {
         return;
       }
 
-      // Double-check agent is still running
+      // Check if agent is still running
+      let stillRunning = false;
       setState((prev) => {
         const currentAgent = prev.agents.find(a => a.id === agentId);
-        if (currentAgent?.status !== 'RUNNING') {
+        stillRunning = currentAgent?.status === 'RUNNING';
+        if (!stillRunning) {
           isPollingRef.current = false;
         }
         return prev;
       });
 
+      if (!stillRunning || !isPollingRef.current) {
+        return;
+      }
+
       await loadConversation(agentId, false);
 
-      // Schedule next poll
-      if (isPollingRef.current) {
+      // Schedule next poll only if still polling
+      if (isPollingRef.current && currentAgentIdRef.current === agentId) {
         pollTimeoutRef.current = setTimeout(poll, pollInterval);
       }
     };
@@ -389,9 +391,12 @@ export function useCloudAgents(options: UseCloudAgentsOptions = {}): {
       if (pollTimeoutRef.current) {
         clearTimeout(pollTimeoutRef.current);
       }
+      if (abortControllerRef.current) {
+        abortControllerRef.current.abort();
+      }
       isPollingRef.current = false;
     };
-  }, [state.selectedAgentId, state.agents, conversationPollIntervalMs, loadConversation]);
+  }, [state.selectedAgentId, state.agents.length, conversationPollIntervalMs, loadConversation]);
 
   return {
     state,
