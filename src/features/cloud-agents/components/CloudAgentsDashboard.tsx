@@ -1079,7 +1079,7 @@ export const CloudAgentsDashboard: FC<CloudAgentsDashboardProps> = ({ initialCon
   // Main Render
   // =========================================================================
 
-  const [sidebarCollapsed, setSidebarCollapsed] = useState(true);
+  const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
 
   // Auto-collapse sidebar on tablet (1024px and below)
   useEffect(() => {
@@ -1088,7 +1088,10 @@ export const CloudAgentsDashboard: FC<CloudAgentsDashboardProps> = ({ initialCon
         setSidebarCollapsed(true);
       }
     };
-    handleResize();
+    // Set initial state based on screen size
+    if (window.innerWidth < 1024) {
+      setSidebarCollapsed(true);
+    }
     window.addEventListener('resize', handleResize);
     return () => window.removeEventListener('resize', handleResize);
   }, []);
