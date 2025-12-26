@@ -268,35 +268,74 @@ export function useCloudAgents(options: UseCloudAgentsOptions = {}): {
           return prev;
         }
 
-        // Create merged messages preserving order
-        const messageMap = new Map<string, any>();
-
-        // Add all current messages first
+        // Create merged messages preserving order - OPTIMIZED to preserve existing message references
+        // This prevents unnecessary re-renders when new messages arrive
+        const existingMessageMap = new Map<string, any>();
+        
+        // Preserve existing message references to prevent unnecessary re-renders
         msgs.forEach((msg) => {
-          messageMap.set(msg.id || `temp-${msg.text}-${(msg as { createdAt?: string })['createdAt']}`, msg);
-        });
-
-        // Update/replace with new messages
-        newMessages.forEach((msg) => {
           const msgId = msg.id || `temp-${msg.text}-${(msg as { createdAt?: string })['createdAt']}`;
-          messageMap.set(msgId, msg);
+          existingMessageMap.set(msgId, msg);
         });
 
-        // Remove temp messages that have been replaced by real messages
-        actualReplaced.forEach((tempId) => {
-          const tempMsg = messageMap.get(tempId);
-          if (tempMsg) {
-            const realMsg = newMessages.find(
-              m => !m.id?.startsWith('temp-') && m.type === tempMsg.type && m.text === tempMsg.text
-            );
-            if (realMsg) {
-              messageMap.delete(tempId);
-            }
+        // Create new array by preserving existing message objects
+        // Only new/unmodified messages get new references
+        const mergedMessages: any[] = [];
+        const processedIds = new Set<string>();
+
+        // First pass: add existing messages in order, replace if needed
+        msgs.forEach((msg) => {
+          const msgId = msg.id || `temp-${msg.text}-${(msg as { createdAt?: string })['createdAt']}`;
+          processedIds.add(msgId);
+          
+          // Check if this temp message was replaced by a real message
+          const isReplacedTemp = msg.id?.startsWith('temp-') && 
+            actualReplaced.has(msg.id) &&
+            newMessages.some(m => !m.id?.startsWith('temp-') && m.type === msg.type && m.text === msg.text);
+          
+          if (isReplacedTemp) {
+            // Don't add replaced temp messages - they'll be replaced by real messages below
+            return;
+          }
+          
+          // Check if we have a newer version of this message
+          const newerMsg = newMessages.find(m => {
+            const newMsgId = m.id || `temp-${m.text}-${(m as { createdAt?: string })['createdAt']}`;
+            return newMsgId === msgId && m !== msg;
+          });
+          
+          if (newerMsg) {
+            // Use the newer message object
+            mergedMessages.push(newerMsg);
+          } else {
+            // Preserve the original message object reference
+            mergedMessages.push(msg);
           }
         });
 
-        // Sort by createdAt
-        const mergedMessages = Array.from(messageMap.values()).sort((a, b) => {
+        // Second pass: add new messages that weren't in the original list
+        newMessages.forEach((msg) => {
+          const msgId = msg.id || `temp-${msg.text}-${(msg as { createdAt?: string })['createdAt']}`;
+          
+          // Skip if we already processed this message (either as existing or replacement)
+          if (processedIds.has(msgId)) return;
+          
+          // Check if this is a replacement for a temp message
+          const wasTempReplaced = msg.id?.startsWith('temp-') === false &&
+            msgs.some(m => m.id?.startsWith('temp-') && 
+              (m as { createdAt?: string })['createdAt'] === (msg as { createdAt?: string })['createdAt'] &&
+              m.type === msg.type && m.text === msg.text);
+          
+          if (wasTempReplaced) {
+            // This real message replaces a temp - skip since we already handled it
+            return;
+          }
+          
+          mergedMessages.push(msg);
+        });
+
+        // Sort by createdAt while preserving object references for existing messages
+        mergedMessages.sort((a, b) => {
           const aTime = (a as { createdAt?: string })['createdAt']
             ? new Date((a as { createdAt?: string })['createdAt']!).getTime() : 0;
           const bTime = (b as { createdAt?: string })['createdAt']
