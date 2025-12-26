@@ -107,52 +107,88 @@ export function useCloudAgents(options: UseCloudAgentsOptions = {}): {
     }
   }, [apiKey, configId]);
 
+  // Ref to track last conversation for comparison (avoid unnecessary re-renders)
+  const lastConversationRef = useRef<CursorConversationResponse | null>(null);
+
   // Enhanced message comparison - only detect genuinely new messages
   const findNewMessages = useCallback((
     currentMessages: any[],
     newMessages: any[]
-  ): { new: any[]; replacedTempIds: Set<string> } => {
+  ): { new: any[]; replacedTempIds: Set<string>; hasChanges: boolean } => {
     const newMsgs: any[] = [];
     const replacedTempIds = new Set<string>();
-    const currentIdSet = new Set(currentMessages.map(m => m.id).filter(Boolean));
-    const currentTempSet = new Set(
-      currentMessages
-        .filter(m => m.id?.startsWith('temp-'))
-        .map(m => `${m.type}-${m.text}`)
+
+    // If lengths are different, there are definitely changes
+    if (currentMessages.length !== newMessages.length) {
+      const currentIds = new Set(currentMessages.map(m => m.id).filter(Boolean));
+      const currentTempContent = new Set(
+        currentMessages.filter(m => m.id?.startsWith('temp-')).map(m => `${m.type}-${m.text}`)
+      );
+
+      for (const msg of newMessages) {
+        // Check if this is a real message we already have
+        if (msg.id && currentIds.has(msg.id)) {
+          const tempMsg = currentMessages.find(
+            m => m.id?.startsWith('temp-') && m.type === msg.type && m.text === msg.text
+          );
+          if (tempMsg) replacedTempIds.add(tempMsg.id);
+          continue;
+        }
+
+        // Check if real message replaces temp
+        if (!msg.id?.startsWith('temp-') && currentTempContent.has(`${msg.type}-${msg.text}`)) {
+          const tempMsg = currentMessages.find(
+            m => m.id?.startsWith('temp-') && m.type === msg.type && m.text === msg.text
+          );
+          if (tempMsg) replacedTempIds.add(tempMsg.id);
+          continue;
+        }
+
+        newMsgs.push(msg);
+      }
+
+      return { new: newMsgs, replacedTempIds, hasChanges: true };
+    }
+
+    // Same length - check if IDs match
+    const currentIds = new Set(currentMessages.map(m => m.id).filter(Boolean));
+    const newIds = new Set(newMessages.map(m => m.id).filter(Boolean));
+
+    // If all IDs match, no changes
+    if (currentIds.size === newIds.size && [...currentIds].every(id => newIds.has(id))) {
+      return { new: [], replacedTempIds: new Set(), hasChanges: false };
+    }
+
+    // IDs don't match - there are changes
+    const currentTempContent = new Set(
+      currentMessages.filter(m => m.id?.startsWith('temp-')).map(m => `${m.type}-${m.text}`)
     );
 
     for (const msg of newMessages) {
-      // If this is a real message we already have, skip
-      if (msg.id && currentIdSet.has(msg.id)) {
-        // Check if it replaces a temp message
+      if (msg.id && currentIds.has(msg.id)) {
         const tempMsg = currentMessages.find(
           m => m.id?.startsWith('temp-') && m.type === msg.type && m.text === msg.text
         );
-        if (tempMsg) {
-          replacedTempIds.add(tempMsg.id);
-        }
+        if (tempMsg) replacedTempIds.add(tempMsg.id);
         continue;
       }
 
-      // If this is a real message matching a temp message by content, it's a replacement
-      if (!msg.id?.startsWith('temp-') && currentTempSet.has(`${msg.type}-${msg.text}`)) {
+      if (!msg.id?.startsWith('temp-') && currentTempContent.has(`${msg.type}-${msg.text}`)) {
         const tempMsg = currentMessages.find(
           m => m.id?.startsWith('temp-') && m.type === msg.type && m.text === msg.text
         );
-        if (tempMsg) {
-          replacedTempIds.add(tempMsg.id);
-        }
+        if (tempMsg) replacedTempIds.add(tempMsg.id);
         continue;
       }
 
-      // This is genuinely new
       newMsgs.push(msg);
     }
 
-    return { new: newMsgs, replacedTempIds };
+    return { new: newMsgs, replacedTempIds, hasChanges: newMsgs.length > 0 || replacedTempIds.size > 0 };
   }, []);
 
   // Smart conversation loader with AbortController and exponential backoff
+  // IMPORTANT: Only call setState when there are actual changes to avoid re-renders
   const loadConversation = useCallback(async (agentId: string, silent = false): Promise<{
     hasNewMessages: boolean;
     newMessageCount: number;
@@ -170,45 +206,49 @@ export function useCloudAgents(options: UseCloudAgentsOptions = {}): {
       const data = await fetchCloudAgentConversation(agentId, apiKey ? { apiKey } : { configId }, controller.signal);
       const newMessages = data.messages ?? [];
 
-      let result: {
-        hasNewMessages: boolean;
-        newMessageCount: number;
-        replacedTempIds: Set<string>;
-      } = { hasNewMessages: false, newMessageCount: 0, replacedTempIds: new Set() };
+      // Get current messages from state (without triggering update)
+      // We'll read this synchronously after the fetch
+      let currentMessages: any[] = [];
+      let currentConversationRefValue: CursorConversationResponse | undefined;
 
+      // Use a one-time effect pattern: we'll set state only if needed
       setState((prev) => {
-        const currentConversation = prev.conversationsByAgentId[agentId] ?? prev.conversation;
-        const currentMessages = currentConversation?.messages ?? [];
+        currentConversationRefValue = prev.conversationsByAgentId[agentId] ?? prev.conversation;
+        currentMessages = currentConversationRefValue?.messages ?? [];
+        return prev; // Don't actually update here
+      });
 
-        // Early exit: no changes
-        if (newMessages.length === currentMessages.length) {
-          // Check if last message ID matches (most common case)
-          const lastCurrent = currentMessages[currentMessages.length - 1];
-          const lastNew = newMessages[newMessages.length - 1];
+      currentMessages = currentMessages || [];
 
-          if (lastCurrent?.id && lastNew?.id && lastCurrent.id === lastNew.id) {
-            // Reset error count on success
-            consecutiveErrorsRef.current = 0;
-            currentPollIntervalRef.current = 3000; // Reset to base interval
-            return prev;
-          }
-        }
+      // Check if there are any changes
+      const { new: genuinelyNew, replacedTempIds, hasChanges } = findNewMessages(currentMessages, newMessages);
 
-        // Find genuinely new messages
-        const { new: genuinelyNew, replacedTempIds } = findNewMessages(currentMessages, newMessages);
+      // Reset error tracking on success
+      consecutiveErrorsRef.current = 0;
+      currentPollIntervalRef.current = 3000;
 
-        if (genuinelyNew.length === 0 && replacedTempIds.size === 0) {
-          // No actual changes
-          consecutiveErrorsRef.current = 0;
-          currentPollIntervalRef.current = 3000;
-          return prev;
+      // If no changes, don't call setState at all (prevents re-render)
+      if (!hasChanges) {
+        return { hasNewMessages: false, newMessageCount: 0, replacedTempIds: new Set() };
+      }
+
+      // There are changes - update state
+      setState((prev) => {
+        const currentConv = prev.conversationsByAgentId[agentId] ?? prev.conversation;
+        const msgs = currentConv?.messages ?? [];
+
+        // Recalculate in case state changed between our check and now
+        const { new: actualNew, replacedTempIds: actualReplaced } = findNewMessages(msgs, newMessages);
+
+        if (actualNew.length === 0 && actualReplaced.size === 0) {
+          return prev; // Double-check: still no changes
         }
 
         // Create merged messages preserving order
         const messageMap = new Map<string, any>();
 
         // Add all current messages first
-        currentMessages.forEach((msg) => {
+        msgs.forEach((msg) => {
           messageMap.set(msg.id || `temp-${msg.text}-${(msg as { createdAt?: string })['createdAt']}`, msg);
         });
 
@@ -219,10 +259,9 @@ export function useCloudAgents(options: UseCloudAgentsOptions = {}): {
         });
 
         // Remove temp messages that have been replaced by real messages
-        replacedTempIds.forEach((tempId) => {
+        actualReplaced.forEach((tempId) => {
           const tempMsg = messageMap.get(tempId);
           if (tempMsg) {
-            // Check if there's a real message with same content
             const realMsg = newMessages.find(
               m => !m.id?.startsWith('temp-') && m.type === tempMsg.type && m.text === tempMsg.text
             );
@@ -246,12 +285,6 @@ export function useCloudAgents(options: UseCloudAgentsOptions = {}): {
           messages: mergedMessages
         };
 
-        result = {
-          hasNewMessages: genuinelyNew.length > 0 || replacedTempIds.size > 0,
-          newMessageCount: genuinelyNew.length,
-          replacedTempIds
-        };
-
         return {
           ...prev,
           conversation: agentId === prev.selectedAgentId ? updatedConversation : prev.conversation,
@@ -259,27 +292,23 @@ export function useCloudAgents(options: UseCloudAgentsOptions = {}): {
             ...prev.conversationsByAgentId,
             [agentId]: updatedConversation
           },
-          pendingMessageCount: prev.pendingMessageCount + genuinelyNew.length
+          pendingMessageCount: prev.pendingMessageCount + actualNew.length
         };
       });
 
-      // Success: reset error tracking
-      consecutiveErrorsRef.current = 0;
-      currentPollIntervalRef.current = 3000;
-
-      return result;
+      return {
+        hasNewMessages: genuinelyNew.length > 0 || replacedTempIds.size > 0,
+        newMessageCount: genuinelyNew.length,
+        replacedTempIds
+      };
     } catch (error) {
       if (error instanceof Error && error.name === 'AbortError') {
-        // Request was cancelled, ignore
         return { hasNewMessages: false, newMessageCount: 0, replacedTempIds: new Set() };
       }
 
       // Track consecutive errors for exponential backoff
       consecutiveErrorsRef.current++;
-
-      // Calculate backoff: 3s → 5s → 10s → 20s → max 30s
-      const backoffMs = Math.min(3000 * Math.pow(2, consecutiveErrorsRef.current - 1), 30000);
-      currentPollIntervalRef.current = backoffMs;
+      currentPollIntervalRef.current = Math.min(3000 * Math.pow(2, consecutiveErrorsRef.current - 1), 30000);
 
       if (!silent) {
         const message = error instanceof Error ? error.message : 'Failed to load conversation';
@@ -419,7 +448,11 @@ export function useCloudAgents(options: UseCloudAgentsOptions = {}): {
       return;
     }
 
-    const selectedAgent = state.agents.find((a) => a.id === state.selectedAgentId);
+    // Use ref to track current selected agent without causing re-renders
+    const currentAgentId = state.selectedAgentId;
+
+    // Find the selected agent using a ref-like approach to avoid deps changes
+    const selectedAgent = state.agents.find((a) => a.id === currentAgentId);
     const isRunning = selectedAgent?.status === 'RUNNING';
     const isFinished = selectedAgent?.status === 'FINISHED';
     const isError = selectedAgent?.status === 'ERROR';
@@ -432,11 +465,17 @@ export function useCloudAgents(options: UseCloudAgentsOptions = {}): {
     const maxPollCount = isRunning ? Infinity : 6;
 
     const runPoll = async () => {
-      if (!state.selectedAgentId) return;
+      if (!state.selectedAgentId || state.selectedAgentId !== currentAgentId) return;
 
       const result = await loadConversation(state.selectedAgentId, true);
 
-      pollCount++;
+      // Only increment poll count if we actually got new messages
+      if (result.hasNewMessages) {
+        pollCount = 0; // Reset on new messages
+      } else {
+        pollCount++;
+      }
+
       if (pollCount > maxPollCount) {
         return;
       }
@@ -459,7 +498,7 @@ export function useCloudAgents(options: UseCloudAgentsOptions = {}): {
         abortControllerRef.current.abort();
       }
     };
-  }, [state.selectedAgentId, state.agents, conversationPollIntervalMs, configId, apiKey, loadConversation]);
+  }, [state.selectedAgentId, conversationPollIntervalMs, configId, apiKey, loadConversation]);
 
   // Pause polling when tab is not visible (save resources)
   useEffect(() => {
