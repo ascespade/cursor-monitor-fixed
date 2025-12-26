@@ -430,7 +430,7 @@ export const CloudAgentsDashboard: FC<CloudAgentsDashboardProps> = ({ initialCon
     configId: primaryConfigId,
     apiKey: primaryApiKey,
     pollIntervalMs: undefined,
-    conversationPollIntervalMs: 2000
+    conversationPollIntervalMs: 5000
   });
 
   const { state: actionsState, launch, stop, remove, followup } = useCloudAgentsActions({

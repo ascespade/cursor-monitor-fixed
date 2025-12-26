@@ -67,7 +67,7 @@ export function useCloudAgents(options: UseCloudAgentsOptions = {}): {
     isConversationLoading: false
   });
 
-  const { configId, apiKey, pollIntervalMs, conversationPollIntervalMs = 2000 } = options;
+  const { configId, apiKey, pollIntervalMs, conversationPollIntervalMs = 5000 } = options;
 
   // Refs for polling management
   const abortControllerRef = useRef<AbortController | null>(null);
@@ -576,7 +576,8 @@ export function useCloudAgents(options: UseCloudAgentsOptions = {}): {
     };
   }, [configId, apiKey, pollIntervalMs, loadUserInfo, loadAgents]);
 
-  // Enhanced conversation polling - ONLY poll when agent is RUNNING
+  // Enhanced conversation polling - SMART polling without webhooks
+  // Only poll when agent is RUNNING, with adaptive intervals based on activity
   useEffect(() => {
     if (!state.selectedAgentId || !conversationPollIntervalMs || conversationPollIntervalMs <= 0) {
       return;
@@ -592,33 +593,32 @@ export function useCloudAgents(options: UseCloudAgentsOptions = {}): {
       return;
     }
 
-    let pollCount = 0;
-    const maxPollCount = Infinity;
+    let consecutiveNoChanges = 0;
+    const baseInterval = conversationPollIntervalMs; // Default 5-10 seconds
+    const maxIdleInterval = 15000; // 15 seconds max when idle
+    const activeInterval = 3000; // 3 seconds when actively receiving messages
 
     const runPoll = async () => {
       if (!state.selectedAgentId || state.selectedAgentId !== currentAgentId) return;
 
       const result = await loadConversation(state.selectedAgentId, true);
 
-      if (!result.hasNewMessages) {
-        pollCount++;
+      // Adaptive polling based on activity
+      if (result.hasNewMessages) {
+        // Agent is active - poll faster
+        consecutiveNoChanges = 0;
+        pollTimeoutRef.current = setTimeout(runPoll, activeInterval);
       } else {
-        pollCount = 0;
+        // No new messages - increase interval gradually
+        consecutiveNoChanges++;
+        const increaseFactor = Math.min(consecutiveNoChanges * 0.5, 2); // Cap at 2x
+        const nextInterval = Math.min(baseInterval * increaseFactor, maxIdleInterval);
+        pollTimeoutRef.current = setTimeout(runPoll, nextInterval);
       }
-
-      if (pollCount > maxPollCount) {
-        return;
-      }
-
-      // Calculate next poll interval with exponential backoff
-      const baseInterval = conversationPollIntervalMs;
-      const nextInterval = Math.min(baseInterval + consecutiveErrorsRef.current * 1000, 30000);
-
-      pollTimeoutRef.current = setTimeout(runPoll, nextInterval);
     };
 
-    // Start polling
-    pollTimeoutRef.current = setTimeout(runPoll, currentPollIntervalRef.current);
+    // Start with base interval
+    pollTimeoutRef.current = setTimeout(runPoll, baseInterval);
 
     return () => {
       if (pollTimeoutRef.current) {
